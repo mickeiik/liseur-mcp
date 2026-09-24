@@ -295,16 +295,15 @@ def test_parse_epub_accepts_metadata_just_under_the_cap() -> None:
     assert [chapter.text for chapter in chapters] == ["Under cap.", "Two."]
 
 
-def test_parse_epub_refuses_non_deflate_metadata_compression() -> None:
-    # The cap only bounds DEFLATE output; a BZIP2 entry must be refused before
-    # decompression, so a highly compressible payload never expands in memory.
+@pytest.mark.parametrize("method", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_parse_epub_refuses_non_deflate_metadata_compression(method: int) -> None:
+    # The cap only bounds DEFLATE output; a BZIP2/LZMA entry must be refused
+    # before decompression, so a highly compressible payload never expands.
     payload = "x" * (4 * 1024 * 1024)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("mimetype", "application/epub+zip")
-        archive.writestr(
-            "META-INF/container.xml", payload, compress_type=zipfile.ZIP_BZIP2
-        )
+        archive.writestr("META-INF/container.xml", payload, compress_type=method)
         archive.writestr("book.opf", "<package/>")
     with pytest.raises(ValueError) as excinfo:
         parse_epub(buffer.getvalue())

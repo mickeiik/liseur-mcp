@@ -117,9 +117,12 @@ def _read_entry(archive: zipfile.ZipFile, name: str, cap: int) -> bytes:
         with archive.open(name) as handle:
             data = handle.read(cap + 1)
     except zipfile.BadZipFile as exc:
-        # A forged (too small) declared size makes CPython stop at the lie and
-        # fail the end-of-stream CRC check instead of reading the real bytes;
-        # reject the entry rather than trust the metadata.
+        # A forged (too small) declared size usually makes CPython stop at the
+        # lie and fail the end-of-stream CRC check, so the entry is rejected
+        # rather than trusted. A forger who also supplies a CRC over that
+        # truncated prefix is indistinguishable from a genuinely short entry
+        # from here, so such a document yields a truncated chapter — bounded by
+        # the cap, never expanded past it.
         raise ValueError(f"EPUB entry {name!r} could not be read: {exc}") from exc
     if len(data) > cap:
         raise ValueError(f"EPUB entry {name!r} expands past the {cap}-byte cap")
