@@ -48,19 +48,43 @@ class LiseurClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = await self._http.request(method, path, **kwargs)
-        if not response.is_success:
-            message = _error_message(response)
-            if 300 <= response.status_code < 400:
-                message += (
-                    " (redirects are not followed; LISEUR_URL may need to point at "
-                    "the redirected base URL)"
-                )
-            raise LiseurError(response.status_code, message)
-        if response.headers.get("content-type", "").startswith("application/json"):
-            return response.json()
-        return response.content
+    @staticmethod
+    def _raise_for_status(response: httpx.Response) -> None:
+        if response.is_success:
+            return
+        message = _error_message(response)
+        if 300 <= response.status_code < 400:
+            message += (
+                " (redirects are not followed; LISEUR_URL may need to point at "
+                "the redirected base URL)"
+            )
+        raise LiseurError(response.status_code, message)
+
+    async def _request(
+        self, method: str, path: str, *, max_bytes: int | None = None, **kwargs: Any
+    ) -> Any:
+        if max_bytes is None:
+            response = await self._http.request(method, path, **kwargs)
+            self._raise_for_status(response)
+            if response.headers.get("content-type", "").startswith("application/json"):
+                return response.json()
+            return response.content
+        async with self._http.stream(method, path, **kwargs) as response:
+            if not response.is_success:
+                await response.aread()
+                self._raise_for_status(response)
+            if response.headers.get("content-type", "").startswith("application/json"):
+                await response.aread()
+                return response.json()
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body += chunk
+                if len(body) > max_bytes:
+                    raise ValueError(
+                        f"response from {path} is larger than the "
+                        f"{max_bytes} byte cap; refusing to buffer it"
+                    )
+            return bytes(body)
 
     async def folders(self) -> list[dict[str, Any]]:
         folders: list[dict[str, Any]] = []
@@ -126,5 +150,7 @@ class LiseurClient:
     async def insights_works(self, span: str) -> dict[str, Any]:
         return await self._request("GET", "/v1/insights/works", params={"range": span})
 
-    async def download(self, book_id: str) -> bytes:
-        return await self._request("GET", f"/v1/books/{book_id}/download")
+    async def download(self, book_id: str, *, max_bytes: int) -> bytes:
+        return await self._request(
+            "GET", f"/v1/books/{book_id}/download", max_bytes=max_bytes
+        )

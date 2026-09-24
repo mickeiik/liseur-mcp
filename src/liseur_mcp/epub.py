@@ -41,6 +41,12 @@ _CHAPTER_MEDIA_TYPES = frozenset(
 _MAX_METADATA_BYTES = 1 * 1024 * 1024
 _MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 _MAX_BOOK_BYTES = 64 * 1024 * 1024
+# The byte cap above bounds the input, not the tree ``ElementTree`` builds from
+# it: a Python object per element means a few KiB of tiny nested tags can
+# allocate tens of MiB. A real OPF is 50-500 elements and a huge omnibus a few
+# thousand, so 16 384 is generous, while a pathological file of tiny nested tags
+# hits it almost immediately.
+_MAX_METADATA_ELEMENTS = 16_384
 
 
 @dataclass(frozen=True)
@@ -137,9 +143,48 @@ def _has_entry(archive: zipfile.ZipFile, name: str) -> bool:
     return True
 
 
+class _BoundedTreeBuilder(ElementTree.TreeBuilder):
+    """Build an XML tree but refuse to grow past ``max_elements``.
+
+    ``ElementTree.fromstring`` allocates a Python object per element, so the
+    metadata byte cap does not bound the tree it builds. Counting ``start``
+    events and raising before the element that would exceed the limit bounds
+    the tree by construction.
+    """
+
+    def __init__(self, name: str, max_elements: int) -> None:
+        super().__init__()
+        self._name = name
+        self._max_elements = max_elements
+        self._count = 0
+
+    def start(self, tag: str, attrs: dict[str, str]) -> ElementTree.Element:
+        self._count += 1
+        if self._count > self._max_elements:
+            raise ValueError(
+                f"EPUB entry {self._name!r} holds more than "
+                f"{self._max_elements} XML elements"
+            )
+        return super().start(tag, attrs)
+
+
+def _parse_metadata(data: bytes, name: str, max_elements: int) -> ElementTree.Element:
+    """Parse one metadata document, refusing a runaway element count.
+
+    ``parser.close()`` finalises the parse (surfacing a truncated document as
+    the same ``ElementTree.ParseError`` ``fromstring`` raised) and returns the
+    root that the bounded builder's ``close()`` hands back.
+    """
+    parser = ElementTree.XMLParser(target=_BoundedTreeBuilder(name, max_elements))
+    parser.feed(data)
+    return parser.close()
+
+
 def _opf_path(archive: zipfile.ZipFile) -> str:
-    container = ElementTree.fromstring(
-        _read_entry(archive, _CONTAINER_PATH, _MAX_METADATA_BYTES)
+    container = _parse_metadata(
+        _read_entry(archive, _CONTAINER_PATH, _MAX_METADATA_BYTES),
+        _CONTAINER_PATH,
+        _MAX_METADATA_ELEMENTS,
     )
     for rootfile in _iter_local(container, "rootfile"):
         full_path = rootfile.get("full-path")
@@ -152,7 +197,11 @@ def parse_epub(data: bytes) -> tuple[str | None, list[Chapter]]:
     """Return the book title and its spine documents as chapters."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         opf_path = _opf_path(archive)
-        package = ElementTree.fromstring(_read_entry(archive, opf_path, _MAX_METADATA_BYTES))
+        package = _parse_metadata(
+            _read_entry(archive, opf_path, _MAX_METADATA_BYTES),
+            opf_path,
+            _MAX_METADATA_ELEMENTS,
+        )
         opf_dir = posixpath.dirname(opf_path)
         manifest = {
             item.get("id"): (item.get("href"), item.get("media-type"))

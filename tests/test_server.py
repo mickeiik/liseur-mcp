@@ -11,6 +11,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+from liseur_mcp import server as server_module
 from liseur_mcp.client import LiseurClient
 from liseur_mcp.config import Settings
 from liseur_mcp.server import create_server
@@ -165,6 +166,22 @@ def test_get_book_text_refuses_bad_chapter_and_non_epub() -> None:
     with pytest.raises(ToolError) as excinfo:
         _call(broken, "get_book_text", {"book_id": "b1"})
     assert "could not parse the EPUB" in str(excinfo.value)
+
+
+def test_get_book_text_refuses_an_epub_over_the_buffer_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server_module, "MAX_EPUB_BYTES", 1000)
+
+    def oversized(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"x" * 2000, headers={"content-type": "application/epub+zip"}
+        )
+
+    mcp = _server(_download_handler(oversized))
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "get_book_text", {"book_id": "b1"})
+    assert "1000 byte cap" in str(excinfo.value)
 
 
 def _changes_handler(rows: list[dict[str, Any]]) -> Handler:

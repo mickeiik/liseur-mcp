@@ -15,6 +15,9 @@ MAX_STATS_WORKS = 50
 MAX_HIGHLIGHTS = 500
 MAX_HIGHLIGHT_BODY = 2_000
 MAX_RANGE_DAYS = 3_660
+# Bounds what one get_book_text call may buffer: a text-bearing EPUB is a few MB,
+# and a 256 MB illustrated book yields no useful text anyway.
+MAX_EPUB_BYTES = 256 * 1024 * 1024
 
 
 def _validate_range(span: str) -> None:
@@ -223,7 +226,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         next_offset continues when the chapter is longer. The EPUB is
         downloaded from the server and parsed on each call.
         """
-        data = await client.download(book_id)
+        data = await client.download(book_id, max_bytes=MAX_EPUB_BYTES)
         try:
             title, chapters = parse_epub(data)
         except Exception as exc:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from xml.etree import ElementTree
 
 import pytest
 
@@ -400,3 +401,93 @@ def test_parse_epub_parses_xml_spine_items(media_type: str) -> None:
         archive.writestr("OEBPS/c1.xml", "<html><body><p>XML text.</p></body></html>")
     _, chapters = parse_epub(buffer.getvalue())
     assert [chapter.text for chapter in chapters] == ["XML text."]
+
+
+def _bomb(tag: str, depth: int) -> str:
+    """A deeply nested single-tag tree (no closing root tag of its own)."""
+    return f"<{tag}>" * depth + f"</{tag}>" * depth
+
+
+def test_parse_epub_refuses_element_bomb_in_opf() -> None:
+    # ~900 KiB of tiny nested tags: under the 1 MiB byte cap, but the tree
+    # ``fromstring`` built from it peaked at tens of MiB. The element bound
+    # refuses it while the bytes are still being parsed.
+    opf = f"<package><metadata><title>Bomb</title></metadata>{_bomb('a', 149_000)}</package>"
+    assert len(opf) < 1 * 1024 * 1024
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr("OEBPS/content.opf", opf)
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    message = str(excinfo.value)
+    assert "content.opf" in message
+    assert str(epub._MAX_METADATA_ELEMENTS) in message
+
+
+def test_parse_epub_refuses_element_bomb_in_container() -> None:
+    container = f"<container>{_bomb('a', 149_000)}</container>"
+    assert len(container) < 1 * 1024 * 1024
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr("book.opf", "<package/>")
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    message = str(excinfo.value)
+    assert "container.xml" in message
+    assert str(epub._MAX_METADATA_ELEMENTS) in message
+
+
+def test_parse_epub_accepts_a_large_legal_opf() -> None:
+    # A real omnibus OPF: thousands of manifest items and itemrefs, but only a
+    # handful of distinct documents. The element bound must sit above this.
+    docs = 10
+    items = 2_000
+    manifest = "".join(
+        f'<item id="m{i}" href="doc{i % docs}.xhtml" '
+        f'media-type="application/xhtml+xml"/>'
+        for i in range(items)
+    )
+    spine = "".join(f'<itemref idref="m{i}"/>' for i in range(items))
+    opf = (
+        "<package><metadata><title>Omnibus</title></metadata>"
+        f"<manifest>{manifest}</manifest><spine>{spine}</spine></package>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr("OEBPS/content.opf", opf)
+        for i in range(docs):
+            archive.writestr(
+                f"OEBPS/doc{i}.xhtml",
+                f'<html><head><title>Doc {i}</title></head>'
+                f"<body><p>Body of doc {i}.</p></body></html>",
+            )
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Omnibus"
+    assert len(chapters) == items
+    assert chapters[0].title == "Doc 0"
+    assert chapters[0].text == "Body of doc 0."
+    assert chapters[items - 1].title == f"Doc {(items - 1) % docs}"
+    assert chapters[items - 1].text == f"Body of doc {(items - 1) % docs}."
+
+
+@pytest.mark.parametrize("broken", ["container", "opf"])
+def test_parse_epub_rejects_malformed_metadata(broken: str) -> None:
+    container = '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>'
+    opf = '<package><metadata><title>Broken</title></metadata></package>'
+    if broken == "container":
+        container = "<container><rootfiles></container>"
+    else:
+        opf = "<package><metadata></package>"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr("book.opf", opf)
+    with pytest.raises(ElementTree.ParseError):
+        parse_epub(buffer.getvalue())

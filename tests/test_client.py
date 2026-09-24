@@ -110,7 +110,33 @@ def test_download_returns_bytes() -> None:
             headers={"content-type": "application/epub+zip"},
         )
 
-    assert asyncio.run(_client(httpx.MockTransport(handler)).download("b1")) == b"epub-bytes"
+    result = asyncio.run(
+        _client(httpx.MockTransport(handler)).download("b1", max_bytes=1024)
+    )
+    assert result == b"epub-bytes"
+
+
+def test_download_refuses_a_body_over_the_cap() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"x" * 100,
+            headers={"content-type": "application/epub+zip"},
+        )
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=10))
+    assert "10 byte cap" in str(excinfo.value)
+
+
+def test_download_error_body_over_the_cap_still_reports_liseur_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    with pytest.raises(LiseurError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=10))
+    assert excinfo.value.status == 500
+    assert "boom" in str(excinfo.value)
 
 
 def test_forbidden_scope_error_mentions_scopes() -> None:
