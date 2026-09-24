@@ -26,7 +26,7 @@ def _validate_range(span: str) -> None:
     if span == "all":
         return
     days = span[:-1] if span.endswith("d") else ""
-    if days.isascii() and days.isdigit() and 1 <= int(days) <= MAX_RANGE_DAYS:
+    if days.isascii() and days.isdigit() and len(days) <= 4 and 1 <= int(days) <= MAX_RANGE_DAYS:
         return
     raise ValueError(f'range must be "all" or "<days>d" with 1-{MAX_RANGE_DAYS} days')
 
@@ -149,13 +149,17 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         order (by progression). The first call joins the catalog book to your
         reading work — a per-user mapping; nothing shared changes. If the
         catalog match is too weak to store (confidence "low"), nothing is
-        returned and the answer says so.
+        returned and the answer says so; annotations may still exist under the
+        returned work_id, which the note points out.
 
         Without book_id: every live annotation on the account, most recently
         changed first (by the server's internal sequence), each carrying its
         work_id. Both branches return at most limit annotations (1-500, cap
-        500) and report count, total and truncated.
+        500); a limit below 1 is refused. count, total and truncated are
+        reported.
         """
+        if limit < 1:
+            raise ValueError(f"limit must be between 1 and {MAX_HIGHLIGHTS}")
         if book_id:
             resolution = await client.resolve_book(book_id)
             if resolution.get("confidence") == "low":
@@ -166,7 +170,10 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
                     "total": 0,
                     "truncated": False,
                     "annotations": [],
-                    "note": "match rests on title and author alone and was not stored",
+                    "note": (
+                        "match rests on title and author alone and was not stored; "
+                        "annotations may still exist under the returned work_id"
+                    ),
                 }
             annotations = await client.work_annotations(resolution["work_id"])
         else:
@@ -175,7 +182,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
                 key=lambda annotation: annotation["seq"],
                 reverse=True,
             )
-        selected = annotations[: max(1, min(limit, MAX_HIGHLIGHTS))]
+        selected = annotations[: min(limit, MAX_HIGHLIGHTS)]
         return {
             "count": len(selected),
             "total": len(annotations),

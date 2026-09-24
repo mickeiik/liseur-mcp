@@ -27,7 +27,7 @@ Mint a dedicated device token with exactly:
 
 - `library-read` — folders, books, search, download
 - `read-insights` — reading statistics
-- `sync` — highlights and notes, and the book→work join
+- `sync` — highlights and notes; the book→work join needs this and `library-read`
 
 ## Run (stdio, for clients on this machine)
 
@@ -97,7 +97,7 @@ docker build -t liseur-mcp .
 docker run -d --name liseur-mcp --restart unless-stopped \
   -e MCP_TRANSPORT=streamable-http -e MCP_HOST=0.0.0.0 \
   -e MCP_AUTH_TOKEN -e LISEUR_URL -e LISEUR_TOKEN \
-  -e MCP_ALLOWED_HOSTS=books.example.ts.net \
+  -e MCP_ALLOWED_HOSTS=books.example.ts.net,localhost,127.0.0.1 \
   -p 8000:8000 liseur-mcp
 ```
 
@@ -111,7 +111,7 @@ docker run -d --name liseur-mcp --restart unless-stopped \
 | `MCP_HOST` / `MCP_PORT` / `MCP_PATH` | `127.0.0.1` / `8000` / `/mcp` | HTTP listener |
 | `MCP_AUTH_TOKEN` / `MCP_AUTH_TOKEN_FILE` | required for HTTP | bearer token clients present |
 | `MCP_ALLOWED_HOSTS` | localhost, 127.0.0.1 (any port) | Host headers the HTTP transport accepts |
-| `MCP_ALLOWED_ORIGINS` | none | Origin headers accepted; with none, any request carrying an Origin is refused |
+| `MCP_ALLOWED_ORIGINS` | none | Origin headers accepted, listed exactly (no `*` wildcard); with none, any request carrying an Origin is refused |
 | `LOG_LEVEL` | `INFO` | log level |
 | `LISEUR_TIMEOUT_SECONDS` | `30` | upstream request timeout |
 

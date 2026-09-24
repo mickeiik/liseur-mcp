@@ -221,7 +221,43 @@ def test_list_highlights_low_confidence_match_returns_nothing() -> None:
     assert result["annotations"] == []
     assert result["book_id"] == "b1"
     assert result["work_id"] == "w1"
-    assert result["note"]
+    assert "not stored" in result["note"]
+    assert "work_id" in result["note"]
+
+
+def test_reading_stats_accepts_range_all() -> None:
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append({"path": request.url.path, "range": request.url.params.get("range", "")})
+        if request.url.path.endswith("/insights/summary"):
+            return httpx.Response(200, json={"sessions": 1})
+        return httpx.Response(200, json={"works": [{"work_id": "w1"}]})
+
+    mcp = _server(handler)
+    result = _call(mcp, "reading_stats", {"range": "all"})
+    assert result["works_total"] == 1
+    assert seen == [
+        {"path": "/v1/insights/summary", "range": "all"},
+        {"path": "/v1/insights/works", "range": "all"},
+    ]
+
+
+def test_list_highlights_refuses_limit_below_one_and_caps_at_max() -> None:
+    rows = [
+        {"id": f"a{i}", "kind": "highlight", "work_id": "w1", "seq": i, "rev": 1}
+        for i in range(1, 601)
+    ]
+    mcp = _server(_changes_handler(rows))
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "list_highlights", {"limit": 0})
+    assert "limit must be" in str(excinfo.value)
+
+    capped = _call(mcp, "list_highlights", {"limit": 600})
+    assert capped["count"] == 500
+    assert capped["total"] == 600
+    assert capped["truncated"] is True
 
 
 def test_reading_stats_caps_works_and_validates_range() -> None:
@@ -243,6 +279,11 @@ def test_reading_stats_caps_works_and_validates_range() -> None:
     calls_before = len(seen)
     with pytest.raises(ToolError) as excinfo:
         _call(mcp, "reading_stats", {"range": "banana"})
+    assert "range must be" in str(excinfo.value)
+    assert len(seen) == calls_before
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "reading_stats", {"range": "1" + "0" * 9999 + "d"})
     assert "range must be" in str(excinfo.value)
     assert len(seen) == calls_before
 

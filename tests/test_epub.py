@@ -5,6 +5,7 @@ import zipfile
 
 import pytest
 
+import liseur_mcp.epub as epub
 from liseur_mcp.epub import parse_epub
 
 CONTAINER = """<?xml version="1.0"?>
@@ -197,3 +198,135 @@ def test_parse_epub_refuses_oversized_document() -> None:
     with pytest.raises(ValueError) as excinfo:
         parse_epub(buffer.getvalue())
     assert "big.xhtml" in str(excinfo.value)
+
+
+def _forge_declared_size(data: bytes, name: str, declared: int) -> bytes:
+    """Rewrite the central-directory uncompressed size for one entry.
+
+    The reader takes entry metadata from the central directory, so a forged
+    (small) declared size is what the old declared-size guards trusted.
+    """
+    buf = bytearray(data)
+    offset = 0
+    while True:
+        offset = buf.find(b"PK\x01\x02", offset)
+        assert offset >= 0, f"central directory record for {name} not found"
+        name_len = int.from_bytes(buf[offset + 28 : offset + 30], "little")
+        extra_len = int.from_bytes(buf[offset + 30 : offset + 32], "little")
+        comment_len = int.from_bytes(buf[offset + 32 : offset + 34], "little")
+        entry_name = bytes(buf[offset + 46 : offset + 46 + name_len])
+        if entry_name == name.encode():
+            buf[offset + 24 : offset + 28] = declared.to_bytes(4, "little")
+            return bytes(buf)
+        offset += 46 + name_len + extra_len + comment_len
+
+
+def _single_doc_book(name: str, href: str, body: str, title: str = "Book") -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            f'<package><metadata><title>{title}</title></metadata>'
+            f'<manifest><item id="c1" href="{href}" media-type="application/xhtml+xml"/>'
+            "</manifest>"
+            '<spine><itemref idref="c1"/></spine></package>',
+        )
+        archive.writestr(name, body)
+    return buffer.getvalue()
+
+
+def test_parse_epub_rejects_forged_declared_size() -> None:
+    body = "<html><body><p>" + "x" * (32 * 1024 * 1024) + "</p></body></html>"
+    data = _single_doc_book("OEBPS/big.xhtml", "big.xhtml", body, title="Forged")
+    data = _forge_declared_size(data, "OEBPS/big.xhtml", 1000)
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(data)
+    assert "big.xhtml" in str(excinfo.value)
+
+
+def test_parse_epub_rejects_oversized_container() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            '<container version="1.0"><rootfiles>'
+            '<rootfile full-path="book.opf"/></rootfiles></container>'
+            + "x" * (17 * 1024 * 1024),
+        )
+        archive.writestr("book.opf", "<package/>")
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    assert "container.xml" in str(excinfo.value)
+
+
+def test_parse_epub_rejects_oversized_opf() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            '<container version="1.0"><rootfiles>'
+            '<rootfile full-path="book.opf"/></rootfiles></container>',
+        )
+        archive.writestr("book.opf", "<package>" + "x" * (17 * 1024 * 1024))
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    assert "book.opf" in str(excinfo.value)
+
+
+def test_parse_epub_enforces_book_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(epub, "_MAX_BOOK_BYTES", 20 * 1024 * 1024)
+    body = "<html><body><p>" + "x" * (15 * 1024 * 1024) + "</p></body></html>"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            '<package><metadata><title>Budget</title></metadata>'
+            "<manifest>"
+            '<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="b" href="b.xhtml" media-type="application/xhtml+xml"/>'
+            "</manifest>"
+            '<spine><itemref idref="a"/><itemref idref="b"/></spine></package>',
+        )
+        archive.writestr("OEBPS/a.xhtml", body)
+        archive.writestr("OEBPS/b.xhtml", body)
+    # Forge the declared sizes up so the declared-size guard the old code used
+    # gives the wrong answer: only a budget on the bytes actually read trips.
+    data = buffer.getvalue()
+    data = _forge_declared_size(data, "OEBPS/a.xhtml", 32 * 1024 * 1024)
+    data = _forge_declared_size(data, "OEBPS/b.xhtml", 32 * 1024 * 1024)
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(data)
+    assert "Budget" in str(excinfo.value)
+
+
+def test_parse_epub_finds_raw_percent_named_entry() -> None:
+    data = _single_doc_book(
+        "OEBPS/Chapter%201.xhtml",
+        "Chapter%201.xhtml",
+        "<html><body><p>Literal percent name.</p></body></html>",
+    )
+    _, chapters = parse_epub(data)
+    assert [chapter.text for chapter in chapters] == ["Literal percent name."]
+
+
+@pytest.mark.parametrize("media_type", ["application/xml", "text/xml"])
+def test_parse_epub_parses_xml_spine_items(media_type: str) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            "<package><metadata><title>Xml</title></metadata>"
+            f'<manifest><item id="c1" href="c1.xml" media-type="{media_type}"/></manifest>'
+            '<spine><itemref idref="c1"/></spine></package>',
+        )
+        archive.writestr("OEBPS/c1.xml", "<html><body><p>XML text.</p></body></html>")
+    _, chapters = parse_epub(buffer.getvalue())
+    assert [chapter.text for chapter in chapters] == ["XML text."]

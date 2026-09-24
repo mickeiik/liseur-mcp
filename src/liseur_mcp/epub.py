@@ -26,11 +26,16 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _SKIP_TAGS = frozenset({"head", "script", "style"})
-_CHAPTER_MEDIA_TYPES = frozenset({"application/xhtml+xml", "text/html"})
-# CPython bounds decompression to the declared size, so these declared-size
-# guards are sound. They cap how much a malicious book can make us allocate.
+_CHAPTER_MEDIA_TYPES = frozenset(
+    {"application/xhtml+xml", "text/html", "application/xml", "text/xml"}
+)
+# ``ZipInfo.file_size`` comes from the archive and is attacker-controlled, so it
+# cannot gate a read: CPython's ``read(-1)`` decompresses the whole stream and
+# only then slices. These caps are enforced on the bytes actually read, via a
+# capped ``handle.read(cap + 1)`` (which bounds ``decompressobj.decompress``),
+# so they limit how much a malicious book can make us allocate.
 _MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
-_MAX_BOOK_BYTES = 128 * 1024 * 1024
+_MAX_BOOK_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -93,8 +98,33 @@ def _iter_local(root: ElementTree.Element, name: str) -> Iterator[ElementTree.El
     return (element for element in root.iter() if _local_name(element.tag) == name)
 
 
+def _read_entry(archive: zipfile.ZipFile, name: str, cap: int) -> bytes:
+    """Read one entry, bounding decompressed output to ``cap`` bytes."""
+    try:
+        with archive.open(name) as handle:
+            data = handle.read(cap + 1)
+    except zipfile.BadZipFile as exc:
+        # A forged (too small) declared size makes CPython stop at the lie and
+        # fail the end-of-stream CRC check instead of reading the real bytes;
+        # reject the entry rather than trust the metadata.
+        raise ValueError(f"EPUB entry {name!r} could not be read: {exc}") from exc
+    if len(data) > cap:
+        raise ValueError(f"EPUB entry {name!r} expands past the {cap}-byte cap")
+    return data
+
+
+def _has_entry(archive: zipfile.ZipFile, name: str) -> bool:
+    try:
+        archive.getinfo(name)
+    except KeyError:
+        return False
+    return True
+
+
 def _opf_path(archive: zipfile.ZipFile) -> str:
-    container = ElementTree.fromstring(archive.read(_CONTAINER_PATH))
+    container = ElementTree.fromstring(
+        _read_entry(archive, _CONTAINER_PATH, _MAX_DOCUMENT_BYTES)
+    )
     for rootfile in _iter_local(container, "rootfile"):
         full_path = rootfile.get("full-path")
         if full_path:
@@ -106,7 +136,7 @@ def parse_epub(data: bytes) -> tuple[str | None, list[Chapter]]:
     """Return the book title and its spine documents as chapters."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         opf_path = _opf_path(archive)
-        package = ElementTree.fromstring(archive.read(opf_path))
+        package = ElementTree.fromstring(_read_entry(archive, opf_path, _MAX_DOCUMENT_BYTES))
         opf_dir = posixpath.dirname(opf_path)
         manifest = {
             item.get("id"): (item.get("href"), item.get("media-type"))
@@ -117,7 +147,7 @@ def parse_epub(data: bytes) -> tuple[str | None, list[Chapter]]:
             (element.text for element in _iter_local(package, "title") if element.text), None
         )
         book_name = title or opf_path
-        declared_total = 0
+        total = 0
         chapters: list[Chapter] = []
         for itemref in _iter_local(package, "itemref"):
             idref = itemref.get("idref")
@@ -130,25 +160,23 @@ def parse_epub(data: bytes) -> tuple[str | None, list[Chapter]]:
             declared_type = media_type.split(";", 1)[0].strip().lower() if media_type else ""
             if declared_type and declared_type not in _CHAPTER_MEDIA_TYPES:
                 continue
-            path = posixpath.normpath(
-                posixpath.join(opf_dir, unquote(href.split("#", 1)[0]))
+            raw_href = href.split("#", 1)[0]
+            # Try the percent-decoded path first, then the raw one: both
+            # conventions occur in the wild, and some archives literally store
+            # the percent-encoded name.
+            candidates = (
+                posixpath.normpath(posixpath.join(opf_dir, unquote(raw_href))),
+                posixpath.normpath(posixpath.join(opf_dir, raw_href)),
             )
-            try:
-                info = archive.getinfo(path)
-            except KeyError:
+            path = next((name for name in candidates if _has_entry(archive, name)), None)
+            if path is None:
                 continue
-            if info.file_size > _MAX_DOCUMENT_BYTES:
+            document = _read_entry(archive, path, _MAX_DOCUMENT_BYTES)
+            if total + len(document) > _MAX_BOOK_BYTES:
                 raise ValueError(
-                    f"EPUB document {path!r} declares {info.file_size} bytes, over the "
-                    f"{_MAX_DOCUMENT_BYTES}-byte per-document cap"
+                    f"EPUB {book_name!r} exceeds the {_MAX_BOOK_BYTES}-byte book budget"
                 )
-            if declared_total + info.file_size > _MAX_BOOK_BYTES:
-                raise ValueError(
-                    f"EPUB {book_name!r} declares more than the "
-                    f"{_MAX_BOOK_BYTES}-byte book budget"
-                )
-            declared_total += info.file_size
-            document = archive.read(path)
+            total += len(document)
             extractor = _TextExtractor()
             extractor.feed(document.decode("utf-8", errors="replace"))
             text = extractor.text
