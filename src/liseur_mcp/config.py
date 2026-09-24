@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     allowed_hosts_csv: str = Field(
         "localhost,localhost:*,127.0.0.1,127.0.0.1:*", alias="MCP_ALLOWED_HOSTS"
     )
+    allowed_origins_csv: str = Field("", alias="MCP_ALLOWED_ORIGINS")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     @field_validator("liseur_url")
@@ -71,6 +72,10 @@ class Settings(BaseSettings):
     @property
     def allowed_hosts(self) -> list[str]:
         return [item.strip() for item in self.allowed_hosts_csv.split(",") if item.strip()]
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [item.strip() for item in self.allowed_origins_csv.split(",") if item.strip()]
 
     @model_validator(mode="before")
     @classmethod

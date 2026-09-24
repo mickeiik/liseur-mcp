@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import zipfile
 
+import pytest
+
 from liseur_mcp.epub import parse_epub
 
 CONTAINER = """<?xml version="1.0"?>
@@ -80,3 +82,118 @@ def test_parse_epub_namespaces_are_optional() -> None:
     title, chapters = parse_epub(buffer.getvalue())
     assert title == "Naked"
     assert chapters[0].text == "Body."
+
+
+def test_parse_epub_unquotes_percent_encoded_hrefs() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Encoded</dc:title>'
+            "</metadata>"
+            "<manifest>"
+            '<item id="c1" href="Text/Chapter%201.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="c2" href="Text/Chapter%202.xhtml" media-type="application/xhtml+xml"/>'
+            "</manifest>"
+            '<spine><itemref idref="c1"/><itemref idref="c2"/></spine>'
+            "</package>",
+        )
+        archive.writestr(
+            "OEBPS/Text/Chapter 1.xhtml", "<html><body><p>One here.</p></body></html>"
+        )
+        archive.writestr(
+            "OEBPS/Text/Chapter 2.xhtml", "<html><body><p>Two here.</p></body></html>"
+        )
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Encoded"
+    assert [chapter.text for chapter in chapters] == ["One here.", "Two here."]
+
+
+def test_parse_epub_missing_head_end_still_yields_body() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            "<package><metadata><title>Headless</title></metadata>"
+            '<manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>'
+            "</manifest><spine><itemref idref=\"c1\"/></spine></package>",
+        )
+        archive.writestr(
+            "OEBPS/c1.xhtml",
+            "<html><head><title>T</title><body><p>Real text.</p></body></html>",
+        )
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Headless"
+    assert chapters[0].text == "Real text."
+
+
+def test_parse_epub_skips_non_text_spine_items() -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 16
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Mixed</dc:title>'
+            "</metadata>"
+            "<manifest>"
+            '<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="pic" href="pic.png" media-type="image/png"/>'
+            "</manifest>"
+            '<spine><itemref idref="c1"/><itemref idref="pic"/></spine>'
+            "</package>",
+        )
+        archive.writestr("OEBPS/c1.xhtml", "<html><body><p>Only text.</p></body></html>")
+        archive.writestr("OEBPS/pic.png", png)
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Mixed"
+    assert len(chapters) == 1
+    assert chapters[0].text == "Only text."
+    assert "PNG" not in chapters[0].text
+    assert "IHDR" not in chapters[0].text
+
+
+def test_parse_epub_accepts_a_media_type_with_parameters_or_caps() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            "<package><metadata><title>Params</title></metadata>"
+            "<manifest>"
+            '<item id="c1" href="c1.xhtml" media-type="application/XHTML+XML; charset=utf-8"/>'
+            '<item id="pic" href="pic.png" media-type="image/png"/>'
+            "</manifest>"
+            '<spine><itemref idref="c1"/><itemref idref="pic"/></spine></package>',
+        )
+        archive.writestr("OEBPS/c1.xhtml", "<html><body><p>Still text.</p></body></html>")
+        archive.writestr("OEBPS/pic.png", b"\x89PNG\r\n\x1a\n")
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Params"
+    assert [chapter.text for chapter in chapters] == ["Still text."]
+
+
+def test_parse_epub_refuses_oversized_document() -> None:
+    oversized = "x" * (17 * 1024 * 1024)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            "<package><metadata><title>Heavy</title></metadata>"
+            '<manifest><item id="big" href="big.xhtml" media-type="application/xhtml+xml"/>'
+            "</manifest><spine><itemref idref=\"big\"/></spine></package>",
+        )
+        archive.writestr("OEBPS/big.xhtml", f"<html><body><p>{oversized}</p></body></html>")
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    assert "big.xhtml" in str(excinfo.value)

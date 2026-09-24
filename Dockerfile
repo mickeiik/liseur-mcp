@@ -12,5 +12,10 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev --no-cache
 
+# Nothing here writes at runtime (PYTHONDONTWRITEBYTECODE above), so the
+# process does not need to own the tree it reads.
+RUN useradd --system --uid 10001 --no-create-home app
+USER app
+
 EXPOSE 8000
 CMD ["liseur-mcp"]

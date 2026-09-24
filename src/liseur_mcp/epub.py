@@ -14,6 +14,7 @@ import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from urllib.parse import unquote
 from xml.etree import ElementTree
 
 _CONTAINER_PATH = "META-INF/container.xml"
@@ -25,6 +26,11 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _SKIP_TAGS = frozenset({"head", "script", "style"})
+_CHAPTER_MEDIA_TYPES = frozenset({"application/xhtml+xml", "text/html"})
+# CPython bounds decompression to the declared size, so these declared-size
+# guards are sound. They cap how much a malicious book can make us allocate.
+_MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
+_MAX_BOOK_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,9 @@ class _TextExtractor(HTMLParser):
         self._title_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "body":
+            # A document missing </head> would otherwise swallow its whole body.
+            self._skip_depth = 0
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
         if tag == "title":
@@ -100,24 +109,46 @@ def parse_epub(data: bytes) -> tuple[str | None, list[Chapter]]:
         package = ElementTree.fromstring(archive.read(opf_path))
         opf_dir = posixpath.dirname(opf_path)
         manifest = {
-            item.get("id"): item.get("href")
+            item.get("id"): (item.get("href"), item.get("media-type"))
             for item in _iter_local(package, "item")
             if item.get("id") and item.get("href")
         }
         title = next(
             (element.text for element in _iter_local(package, "title") if element.text), None
         )
+        book_name = title or opf_path
+        declared_total = 0
         chapters: list[Chapter] = []
         for itemref in _iter_local(package, "itemref"):
             idref = itemref.get("idref")
-            href = manifest.get(idref) if idref else None
+            entry = manifest.get(idref) if idref else None
+            if entry is None:
+                continue
+            href, media_type = entry
             if not href:
                 continue
-            path = posixpath.normpath(posixpath.join(opf_dir, href.split("#", 1)[0]))
+            declared_type = media_type.split(";", 1)[0].strip().lower() if media_type else ""
+            if declared_type and declared_type not in _CHAPTER_MEDIA_TYPES:
+                continue
+            path = posixpath.normpath(
+                posixpath.join(opf_dir, unquote(href.split("#", 1)[0]))
+            )
             try:
-                document = archive.read(path)
+                info = archive.getinfo(path)
             except KeyError:
                 continue
+            if info.file_size > _MAX_DOCUMENT_BYTES:
+                raise ValueError(
+                    f"EPUB document {path!r} declares {info.file_size} bytes, over the "
+                    f"{_MAX_DOCUMENT_BYTES}-byte per-document cap"
+                )
+            if declared_total + info.file_size > _MAX_BOOK_BYTES:
+                raise ValueError(
+                    f"EPUB {book_name!r} declares more than the "
+                    f"{_MAX_BOOK_BYTES}-byte book budget"
+                )
+            declared_total += info.file_size
+            document = archive.read(path)
             extractor = _TextExtractor()
             extractor.feed(document.decode("utf-8", errors="replace"))
             text = extractor.text

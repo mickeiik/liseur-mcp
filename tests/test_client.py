@@ -113,11 +113,47 @@ def test_download_returns_bytes() -> None:
     assert asyncio.run(_client(httpx.MockTransport(handler)).download("b1")) == b"epub-bytes"
 
 
-def test_forbidden_error_mentions_scopes() -> None:
+def test_forbidden_scope_error_mentions_scopes() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(403, json={"error": "forbidden"})
+        return httpx.Response(403, json={"error": "insufficient scope"})
 
     with pytest.raises(LiseurError) as excinfo:
         asyncio.run(_client(httpx.MockTransport(handler)).insights_summary("30d"))
     assert excinfo.value.status == 403
     assert "scope" in str(excinfo.value)
+
+
+def test_forbidden_https_required_does_not_mention_scopes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "https required"})
+
+    with pytest.raises(LiseurError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).insights_summary("30d"))
+    assert excinfo.value.status == 403
+    assert "https required" in str(excinfo.value)
+    assert "scope" not in str(excinfo.value)
+
+
+def test_redirect_raises_liseur_error_not_attribute_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            301,
+            text="<html><body>moved</body></html>",
+            headers={"content-type": "text/html", "location": "https://elsewhere.test/v1"},
+        )
+
+    with pytest.raises(LiseurError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).folders())
+    assert excinfo.value.status == 301
+    assert "LISEUR_URL" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("body", [["not", "an", "object"], "just a string"])
+def test_non_dict_json_error_body_is_reported_cleanly(body: object) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json=body)
+
+    with pytest.raises(LiseurError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).folders())
+    assert excinfo.value.status == 500
+    assert "liseur-sync answered 500" in str(excinfo.value)

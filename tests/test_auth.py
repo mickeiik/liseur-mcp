@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 import httpx
+import pytest
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
@@ -149,6 +150,11 @@ def _real_app() -> BearerAuthMiddleware:
     return BearerAuthMiddleware(mcp.streamable_http_app(), TOKEN, settings.mcp_path)
 
 
+def test_empty_token_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError):
+        BearerAuthMiddleware(_Recorder(), "")
+
+
 def test_real_server_wiring_rejects_unauthenticated_and_accepts_bearer() -> None:
     app = _real_app()
     with TestClient(app, base_url="http://127.0.0.1") as test_client:
@@ -167,6 +173,44 @@ def test_real_server_wiring_rejects_unauthenticated_and_accepts_bearer() -> None
         )
         assert authenticated.status_code == 200
         assert authenticated.json()["result"]["serverInfo"]["name"] == "liseur"
+
+
+def _http_settings(**overrides: Any) -> Settings:
+    values: dict[str, Any] = {
+        "LISEUR_URL": "http://liseur.test",
+        "LISEUR_TOKEN": "token",
+        "MCP_TRANSPORT": "streamable-http",
+        "MCP_AUTH_TOKEN": TOKEN,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def _http_app(settings: Settings) -> BearerAuthMiddleware:
+    client = LiseurClient(
+        "http://liseur.test",
+        "token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+    )
+    mcp = create_server(client, settings)
+    return BearerAuthMiddleware(mcp.streamable_http_app(), TOKEN, settings.mcp_path)
+
+
+def test_origin_is_refused_by_default_and_accepted_when_allowed() -> None:
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept": "application/json, text/event-stream",
+        "Origin": "http://client.test",
+    }
+
+    with TestClient(_http_app(_http_settings()), base_url="http://127.0.0.1") as client:
+        refused = client.post("/mcp", json=INITIALIZE, headers=headers)
+    assert refused.status_code == 403
+
+    allowed_app = _http_app(_http_settings(MCP_ALLOWED_ORIGINS="http://client.test"))
+    with TestClient(allowed_app, base_url="http://127.0.0.1") as client:
+        allowed = client.post("/mcp", json=INITIALIZE, headers=headers)
+    assert allowed.status_code == 200
 
 
 def test_real_server_wiring_rejects_unauthenticated_with_root_path() -> None:

@@ -64,6 +64,8 @@ at startup:
 export MCP_TRANSPORT=streamable-http
 export MCP_HOST=0.0.0.0
 export MCP_AUTH_TOKEN=...   # required: the endpoint has no anonymous mode
+# every Host header a client reaches this server under; anything else is 421
+export MCP_ALLOWED_HOSTS=books.example.ts.net,localhost,127.0.0.1
 export LISEUR_URL=... LISEUR_TOKEN=...
 uv run liseur-mcp
 ```
@@ -95,6 +97,7 @@ docker build -t liseur-mcp .
 docker run -d --name liseur-mcp --restart unless-stopped \
   -e MCP_TRANSPORT=streamable-http -e MCP_HOST=0.0.0.0 \
   -e MCP_AUTH_TOKEN -e LISEUR_URL -e LISEUR_TOKEN \
+  -e MCP_ALLOWED_HOSTS=books.example.ts.net \
   -p 8000:8000 liseur-mcp
 ```
 
@@ -107,8 +110,21 @@ docker run -d --name liseur-mcp --restart unless-stopped \
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `MCP_HOST` / `MCP_PORT` / `MCP_PATH` | `127.0.0.1` / `8000` / `/mcp` | HTTP listener |
 | `MCP_AUTH_TOKEN` / `MCP_AUTH_TOKEN_FILE` | required for HTTP | bearer token clients present |
-| `MCP_ALLOWED_HOSTS` | localhost | Host headers the HTTP transport accepts |
+| `MCP_ALLOWED_HOSTS` | localhost, 127.0.0.1 (any port) | Host headers the HTTP transport accepts |
+| `MCP_ALLOWED_ORIGINS` | none | Origin headers accepted; with none, any request carrying an Origin is refused |
+| `LOG_LEVEL` | `INFO` | log level |
 | `LISEUR_TIMEOUT_SECONDS` | `30` | upstream request timeout |
+
+### If a client cannot connect
+
+- `421 Invalid Host header` — the request arrived under a Host the transport
+  refuses. Add the name you connect with (a LAN address, the proxy's hostname)
+  to `MCP_ALLOWED_HOSTS`.
+- `403 Invalid Origin header` — the client sends an `Origin` and
+  `MCP_ALLOWED_ORIGINS` is empty; list that origin.
+- `403 {"error":"https required"}` — that comes from the liseur-sync instance,
+  not from here: it refuses plain HTTP unless it is configured to allow it.
+  Point `LISEUR_URL` at the HTTPS name.
 
 ## Develop
 

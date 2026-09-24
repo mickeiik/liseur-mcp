@@ -14,6 +14,21 @@ MAX_TEXT_CHARS = 100_000
 MAX_STATS_WORKS = 50
 MAX_HIGHLIGHTS = 500
 MAX_HIGHLIGHT_BODY = 2_000
+MAX_RANGE_DAYS = 3_660
+
+
+def _validate_range(span: str) -> None:
+    """Refuse a span the upstream summary and works endpoints read differently.
+
+    Both endpoints fall back silently for a bad range — the summary to 30 days,
+    the works list to unbounded — so an unvalidated value would mix two spans.
+    """
+    if span == "all":
+        return
+    days = span[:-1] if span.endswith("d") else ""
+    if days.isascii() and days.isdigit() and 1 <= int(days) <= MAX_RANGE_DAYS:
+        return
+    raise ValueError(f'range must be "all" or "<days>d" with 1-{MAX_RANGE_DAYS} days')
 
 
 def _annotation_view(annotation: dict[str, Any]) -> dict[str, Any]:
@@ -52,6 +67,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=settings.allowed_hosts,
+            allowed_origins=settings.allowed_origins,
         ),
     )
 
@@ -70,8 +86,9 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
     async def list_books(folder_id: str, order: str = "recent", limit: int = 50) -> dict[str, Any]:
         """List books in one folder.
 
-        order: "recent" (newest first, default) or "oldest". limit: 1-200.
-        Returns full catalog records: book_id, title, contributors, series, tags.
+        order: "recent" (newest first, default) or "oldest". limit: 1-200; a
+        value outside that range is refused, not clamped. Returns full catalog
+        records: book_id, title, contributors, series, tags.
         """
         books = await client.books(folder_id, order=order, limit=limit)
         return {"count": len(books), "books": books}
@@ -83,7 +100,10 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         """Search titles, descriptions, series, contributors and tags.
 
         Searches every folder when folder_id is omitted. Results are best
-        matches per folder, not alphabetically ordered.
+        matches per folder, not alphabetically ordered, gathered folder by
+        folder: earlier folders can fill the limit and later folders then
+        contribute nothing (truncated says the answer was cut). limit: 1-100
+        (default 20); a value outside that range is refused, not clamped.
         """
         folders = [{"folder_id": folder_id}] if folder_id else await client.folders()
         merged: dict[str, dict[str, Any]] = {}
@@ -105,10 +125,14 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
     async def reading_stats(range: str = "30d") -> dict[str, Any]:  # noqa: A002
         """Reading totals, streak and pace over a span, plus per-work rows.
 
-        range is a number of days ("7d", "30d") or "all". Per-work rows are
-        ordered by time read and capped at 50; current_progression is always
-        the latest position regardless of the span.
+        range is "all" or a number of days from 1 to 3660 ("7d", "30d"); any
+        other value is refused rather than silently defaulted, because the
+        upstream summary and works endpoints would then disagree on the span.
+        Per-work rows are ordered by time read and capped at 50;
+        current_progression is always the latest position regardless of the
+        span.
         """
+        _validate_range(range)
         summary = await client.insights_summary(range)
         works = (await client.insights_works(range)).get("works", [])
         return {
@@ -121,10 +145,16 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
     async def list_highlights(book_id: str | None = None, limit: int = 100) -> dict[str, Any]:
         """List highlights, notes and bookmarks.
 
-        With book_id: the annotations of that book. The first call joins the
-        catalog book to your reading work — a per-user mapping; nothing shared
-        changes. Without book_id: every live annotation on the account, each
-        carrying its work_id.
+        With book_id: the annotations of that book, in the server's document
+        order (by progression). The first call joins the catalog book to your
+        reading work — a per-user mapping; nothing shared changes. If the
+        catalog match is too weak to store (confidence "low"), nothing is
+        returned and the answer says so.
+
+        Without book_id: every live annotation on the account, most recently
+        changed first (by the server's internal sequence), each carrying its
+        work_id. Both branches return at most limit annotations (1-500, cap
+        500) and report count, total and truncated.
         """
         if book_id:
             resolution = await client.resolve_book(book_id)
@@ -133,15 +163,23 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
                     "book_id": book_id,
                     "work_id": resolution.get("work_id"),
                     "count": 0,
+                    "total": 0,
+                    "truncated": False,
                     "annotations": [],
                     "note": "match rests on title and author alone and was not stored",
                 }
             annotations = await client.work_annotations(resolution["work_id"])
         else:
-            annotations = await client.annotation_changes()
+            annotations = sorted(
+                await client.annotation_changes(),
+                key=lambda annotation: annotation["seq"],
+                reverse=True,
+            )
         selected = annotations[: max(1, min(limit, MAX_HIGHLIGHTS))]
         return {
             "count": len(selected),
+            "total": len(annotations),
+            "truncated": len(annotations) > len(selected),
             "annotations": [_annotation_view(annotation) for annotation in selected],
         }
 

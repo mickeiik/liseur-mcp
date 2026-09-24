@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import zipfile
+from collections.abc import Callable
+from typing import Any
 
 import httpx
+import pytest
+from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from liseur_mcp.client import LiseurClient
 from liseur_mcp.config import Settings
@@ -18,9 +25,65 @@ TOOL_NAMES = {
     "get_book_text",
 }
 
+Handler = Callable[[httpx.Request], httpx.Response]
+
+CONTAINER = """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"""
+
+OPF = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Test Book</dc:title>
+  </metadata>
+  <manifest>
+    <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+  </spine>
+</package>"""
+
+CHAPTER_0 = "One\n\nHello world.\n\nSecond & last."
+CHAPTER_1 = "Another chapter."
+
 
 def _settings() -> Settings:
     return Settings(LISEUR_URL="http://liseur.test", LISEUR_TOKEN="token")
+
+
+def _epub() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr("OEBPS/content.opf", OPF)
+        archive.writestr(
+            "OEBPS/ch1.xhtml",
+            '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+            "<title>First</title></head><body><h1>One</h1>"
+            "<p>Hello world.</p><p>Second &amp; last.</p></body></html>",
+        )
+        archive.writestr(
+            "OEBPS/ch2.xhtml",
+            "<html><head><title></title></head><body><p>Another chapter.</p></body></html>",
+        )
+    return buffer.getvalue()
+
+
+def _server(handler: Handler) -> FastMCP:
+    client = LiseurClient("http://liseur.test", "token", transport=httpx.MockTransport(handler))
+    return create_server(client, _settings())
+
+
+def _call(mcp: FastMCP, name: str, arguments: dict[str, Any]) -> Any:
+    _, structured = asyncio.run(mcp.call_tool(name, arguments))
+    return structured
 
 
 def test_server_registers_the_read_only_tool_surface() -> None:
@@ -45,3 +108,181 @@ def test_http_transport_requires_an_auth_token() -> None:
         assert "MCP_AUTH_TOKEN" in str(exc)
     else:
         raise AssertionError("streamable-http must refuse to start without MCP_AUTH_TOKEN")
+
+
+def _download_handler(handler: Handler) -> Handler:
+    def routed(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/download"):
+            return handler(request)
+        return httpx.Response(404)
+
+    return routed
+
+
+def test_get_book_text_reads_toc_and_slices_chapters() -> None:
+    def epub(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=_epub(), headers={"content-type": "application/epub+zip"}
+        )
+
+    mcp = _server(_download_handler(epub))
+
+    toc = _call(mcp, "get_book_text", {"book_id": "b1"})
+    assert toc["title"] == "Test Book"
+    assert toc["total_chars"] == len(CHAPTER_0) + len(CHAPTER_1)
+    assert [chapter["index"] for chapter in toc["chapters"]] == [0, 1]
+    assert [chapter["title"] for chapter in toc["chapters"]] == ["First", "Chapter 2"]
+    assert toc["chapters"][0]["chars"] == len(CHAPTER_0)
+
+    first = _call(mcp, "get_book_text", {"book_id": "b1", "chapter": 0})
+    assert first["chapter"]["index"] == 0
+    assert first["text"] == CHAPTER_0
+    assert "next_offset" not in first
+
+    sliced = _call(
+        mcp, "get_book_text", {"book_id": "b1", "chapter": 0, "offset": 2, "max_chars": 5}
+    )
+    assert sliced["offset"] == 2
+    assert sliced["text"] == CHAPTER_0[2:7]
+    assert sliced["next_offset"] == 7
+
+
+def test_get_book_text_refuses_bad_chapter_and_non_epub() -> None:
+    def epub(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_epub())
+
+    out_of_range = _server(_download_handler(epub))
+    with pytest.raises(ToolError) as excinfo:
+        _call(out_of_range, "get_book_text", {"book_id": "b1", "chapter": 9})
+    assert "chapter must be between 0 and 1" in str(excinfo.value)
+
+    def not_an_epub(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"not an epub", headers={"content-type": "application/octet-stream"}
+        )
+
+    broken = _server(_download_handler(not_an_epub))
+    with pytest.raises(ToolError) as excinfo:
+        _call(broken, "get_book_text", {"book_id": "b1"})
+    assert "could not parse the EPUB" in str(excinfo.value)
+
+
+def _changes_handler(rows: list[dict[str, Any]]) -> Handler:
+    def handler(request: httpx.Request) -> httpx.Response:
+        since = int(request.url.params["since"])
+        remaining = [row for row in rows if row["seq"] > since]
+        return httpx.Response(
+            200,
+            json={
+                "annotations": remaining,
+                "high_water": rows[-1]["seq"],
+                "has_more": False,
+            },
+        )
+
+    return handler
+
+
+# The feed is seq-ascending: the oldest annotation is served first.
+_FEED: list[dict[str, Any]] = [
+    {"id": "old", "kind": "highlight", "work_id": "w1", "seq": 1, "rev": 1},
+    {"id": "mid", "kind": "note", "work_id": "w1", "seq": 2, "rev": 1},
+    {"id": "new", "kind": "highlight", "work_id": "w2", "seq": 3, "rev": 1},
+    {"id": "gone", "rev": 1, "seq": 4, "deleted": True},
+]
+
+
+def test_list_highlights_account_wide_is_newest_first_with_honest_counts() -> None:
+    mcp = _server(_changes_handler(_FEED))
+
+    capped = _call(mcp, "list_highlights", {"limit": 2})
+    assert [annotation["id"] for annotation in capped["annotations"]] == ["new", "mid"]
+    assert capped["count"] == 2
+    assert capped["total"] == 3
+    assert capped["truncated"] is True
+
+    full = _call(mcp, "list_highlights", {})
+    assert [annotation["id"] for annotation in full["annotations"]] == ["new", "mid", "old"]
+    assert full["count"] == 3
+    assert full["total"] == 3
+    assert full["truncated"] is False
+    assert "seq" not in full["annotations"][0]
+
+
+def test_list_highlights_low_confidence_match_returns_nothing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"confidence": "low", "work_id": "w1"})
+
+    mcp = _server(handler)
+    result = _call(mcp, "list_highlights", {"book_id": "b1"})
+    assert result["count"] == 0
+    assert result["total"] == 0
+    assert result["truncated"] is False
+    assert result["annotations"] == []
+    assert result["book_id"] == "b1"
+    assert result["work_id"] == "w1"
+    assert result["note"]
+
+
+def test_reading_stats_caps_works_and_validates_range() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("range", ""))
+        if request.url.path.endswith("/insights/summary"):
+            return httpx.Response(200, json={"sessions": 1})
+        return httpx.Response(200, json={"works": [{"work_id": f"w{i}"} for i in range(60)]})
+
+    mcp = _server(handler)
+
+    result = _call(mcp, "reading_stats", {"range": "30d"})
+    assert len(result["works"]) == 50
+    assert result["works_total"] == 60
+    assert seen == ["30d", "30d"]
+
+    calls_before = len(seen)
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "reading_stats", {"range": "banana"})
+    assert "range must be" in str(excinfo.value)
+    assert len(seen) == calls_before
+
+
+def test_list_books_forwards_order_and_limit() -> None:
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"books": [{"book_id": "b1"}]})
+
+    mcp = _server(handler)
+    result = _call(mcp, "list_books", {"folder_id": "f1", "order": "oldest", "limit": 7})
+    assert result["count"] == 1
+    assert seen == [{"order": "oldest", "limit": "7"}]
+
+
+def test_search_books_forwards_query_and_merges_two_folders() -> None:
+    searches: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/folders":
+            return httpx.Response(
+                200,
+                json={"folders": [{"folder_id": "f1"}, {"folder_id": "f2"}]},
+            )
+        searches.append(dict(request.url.params))
+        if request.url.path.split("/")[3] == "f1":
+            return httpx.Response(
+                200,
+                json={"books": [{"book_id": "b1"}, {"book_id": "b2"}], "truncated": False},
+            )
+        return httpx.Response(
+            200,
+            json={"books": [{"book_id": "b2"}, {"book_id": "b3"}], "truncated": False},
+        )
+
+    mcp = _server(handler)
+    result = _call(mcp, "search_books", {"query": "dune", "limit": 10})
+    assert [book["book_id"] for book in result["books"]] == ["b1", "b2", "b3"]
+    assert result["count"] == 3
+    assert result["truncated"] is False
+    assert searches == [{"q": "dune", "limit": "10"}, {"q": "dune", "limit": "10"}]

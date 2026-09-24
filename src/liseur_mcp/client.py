@@ -17,12 +17,13 @@ class LiseurError(RuntimeError):
 
 def _error_message(response: httpx.Response) -> str:
     try:
-        detail = response.json().get("error")
+        body = response.json()
     except ValueError:
-        detail = None
+        body = None
+    detail = body.get("error") if isinstance(body, dict) else None
     detail = detail or response.text[:200].strip() or response.reason_phrase
     message = f"liseur-sync answered {response.status_code}: {detail}"
-    if response.status_code == 403:
+    if response.status_code == 403 and "scope" in str(detail).lower():
         message += " (the device token may be missing a required scope)"
     return message
 
@@ -49,8 +50,14 @@ class LiseurClient:
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._http.request(method, path, **kwargs)
-        if response.status_code >= 400:
-            raise LiseurError(response.status_code, _error_message(response))
+        if not response.is_success:
+            message = _error_message(response)
+            if 300 <= response.status_code < 400:
+                message += (
+                    " (redirects are not followed; LISEUR_URL may need to point at "
+                    "the redirected base URL)"
+                )
+            raise LiseurError(response.status_code, message)
         if response.headers.get("content-type", "").startswith("application/json"):
             return response.json()
         return response.content

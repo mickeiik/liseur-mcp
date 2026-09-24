@@ -29,6 +29,8 @@ class BearerAuthMiddleware:
     """
 
     def __init__(self, app: ASGIApp, token: str, mcp_path: str = "/mcp") -> None:
+        if not token:
+            raise ValueError("the bearer token must not be empty")
         self.app = app
         self._expected = token.encode("utf-8")
         self._path = mcp_path.rstrip("/")
