@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterable
 import httpx
 import pytest
 
-from liseur_mcp.client import LiseurClient, LiseurError
+from liseur_mcp.client import _ERROR_BODY_BYTES, LiseurClient, LiseurError
 
 
 def _client(transport: httpx.AsyncBaseTransport) -> LiseurClient:
@@ -149,6 +149,21 @@ def test_download_returns_bytes() -> None:
         _client(httpx.MockTransport(handler)).download("b1", max_bytes=1024)
     )
     assert result == b"epub-bytes"
+
+
+def test_error_body_keeps_at_most_its_budget_from_one_huge_chunk() -> None:
+    # A peer is free to hand over one enormous chunk; the truncation must hold
+    # regardless (dropping it retained 10 MB of a 10 MB chunk).
+    class _OneBigChunk(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"e" * (10 * 1024 * 1024)
+
+        async def aclose(self) -> None:
+            pass
+
+    response = httpx.Response(500, stream=_OneBigChunk())
+    body = asyncio.run(LiseurClient._error_body(response))
+    assert len(body) <= _ERROR_BODY_BYTES
 
 
 def test_download_refuses_a_body_over_the_cap() -> None:

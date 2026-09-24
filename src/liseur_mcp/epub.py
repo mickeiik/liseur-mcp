@@ -193,13 +193,12 @@ def _parse_metadata(data: bytes, name: str, max_elements: int) -> ElementTree.El
     either a pathological input or a rarity not worth the memory it can cost,
     and the error names the entry so the refusal is diagnosable.
 
-    A NUL byte is refused because expat uses NULs to autodetect the UTF-16 and
-    UTF-32 encodings, the only encodings it will accept for a document whose
-    ``<!ENTITY`` token is hidden behind alternating NULs; no real package
-    document or container uses them, so the document must be UTF-8 or ASCII.
-    With that and the literal-token scan above, every encoding expat accepts
-    for these two files is covered (UTF-8, ASCII and the single-byte sets where
-    the ASCII token appears literally).
+    A NUL byte is refused because expat uses NULs to autodetect the UTF-16
+    encoding — the one encoding it accepts whose ``<!ENTITY`` token is hidden
+    behind alternating NULs — and no real package document or container uses
+    UTF-16, so these two files must be UTF-8 or ASCII. With that and the
+    literal-token scan above, every encoding expat accepts for them is covered
+    (UTF-8, ASCII and the single-byte sets where the ASCII token is literal).
 
     The input is handed to expat in ``_FEED_SLICE_BYTES`` slices so a refusal
     from the bounded builder stops consuming the remaining buffer.
