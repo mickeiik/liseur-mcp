@@ -163,10 +163,11 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         remain beyond this page.
 
         Paging: pass the next_offset of a previous page as offset to read on;
-        next_offset is present only when more annotations remain. The list is
-        fetched fresh on every call, so if annotations change between pages an
-        item can shift — pass back the next_offset you were given rather than
-        computing your own.
+        next_offset is present only when more annotations remain, and every
+        response echoes the offset its page started at. The list is fetched
+        fresh on every call, so if annotations change between pages an item can
+        shift — pass back the next_offset you were given rather than computing
+        your own.
         """
         if limit < 1:
             raise ValueError(f"limit must be between 1 and {MAX_HIGHLIGHTS}")

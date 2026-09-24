@@ -243,6 +243,30 @@ def test_reading_stats_accepts_range_all() -> None:
     ]
 
 
+def test_list_highlights_next_offset_respects_the_cap() -> None:
+    # next_offset must be the page's real end (the 500 cap), not start + limit:
+    # a cap-unaware value would silently skip everything between them.
+    rows = [
+        {"id": f"a{i}", "kind": "highlight", "work_id": "w1", "seq": i, "rev": 1}
+        for i in range(1, 1201)
+    ]
+    mcp = _server(_changes_handler(rows))
+
+    first = _call(mcp, "list_highlights", {"limit": 600})
+    assert first["count"] == 500
+    assert first["next_offset"] == 500
+
+    walked = [annotation["id"] for annotation in first["annotations"]]
+    offset = first["next_offset"]
+    while True:
+        page = _call(mcp, "list_highlights", {"limit": 600, "offset": offset})
+        walked += [annotation["id"] for annotation in page["annotations"]]
+        if "next_offset" not in page:
+            break
+        offset = page["next_offset"]
+    assert walked == [row["id"] for row in reversed(rows)]
+
+
 def test_list_highlights_refuses_limit_below_one_and_caps_at_max() -> None:
     rows = [
         {"id": f"a{i}", "kind": "highlight", "work_id": "w1", "seq": i, "rev": 1}
