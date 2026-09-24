@@ -187,12 +187,31 @@ def _parse_metadata(data: bytes, name: str, max_elements: int) -> ElementTree.El
     parses. Spine documents are not checked here: they stream through
     ``HTMLParser``, which does not expand custom entities.
 
+    Entity declarations are refused outright, so a legacy OPF that inlines a
+    named entity, or a comment/CDATA section containing the literal token, is
+    refused whole rather than parsed: an ``<!ENTITY`` in these two files is
+    either a pathological input or a rarity not worth the memory it can cost,
+    and the error names the entry so the refusal is diagnosable.
+
+    A NUL byte is refused because expat uses NULs to autodetect the UTF-16 and
+    UTF-32 encodings, the only encodings it will accept for a document whose
+    ``<!ENTITY`` token is hidden behind alternating NULs; no real package
+    document or container uses them, so the document must be UTF-8 or ASCII.
+    With that and the literal-token scan above, every encoding expat accepts
+    for these two files is covered (UTF-8, ASCII and the single-byte sets where
+    the ASCII token appears literally).
+
     The input is handed to expat in ``_FEED_SLICE_BYTES`` slices so a refusal
     from the bounded builder stops consuming the remaining buffer.
     ``parser.close()`` finalises the parse (surfacing a truncated document as
     the same ``ElementTree.ParseError`` ``fromstring`` raised) and returns the
     root that the bounded builder's ``close()`` hands back.
     """
+    if b"\x00" in data:
+        raise ValueError(
+            f"EPUB entry {name!r} contains a NUL byte; "
+            "metadata must be UTF-8 or ASCII"
+        )
     if b"<!ENTITY" in data:
         raise ValueError(
             f"EPUB entry {name!r} declares an XML entity; "

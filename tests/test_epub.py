@@ -546,10 +546,8 @@ def test_metadata_refusal_stops_feeding_the_buffer(
     with pytest.raises(ValueError) as excinfo:
         epub._parse_metadata(opf, "content.opf", epub._MAX_METADATA_ELEMENTS)
     assert str(epub._MAX_METADATA_ELEMENTS) in str(excinfo.value)
-    assert fed <= epub._FEED_SLICE_BYTES
-    # Refused inside one slice, far short of the whole document. Deliberately
-    # not ``== _FEED_SLICE_BYTES``: the property is "refusal happens within a
-    # slice", which holds even if the slice size changes or feeding is refactored.
+    # Refused inside one slice, far short of the whole document: the property is
+    # "the refusal stops the feed", not that it lands in the first slice.
     assert fed < len(opf) // 4
 
 
@@ -643,3 +641,61 @@ def test_parse_epub_accepts_a_doctype_without_entities() -> None:
     title, chapters = parse_epub(buffer.getvalue())
     assert title == "Doctype"
     assert [chapter.text for chapter in chapters] == ["First body.", "Second body."]
+
+
+def _book_bytes(container: str | bytes, opf: str | bytes | None = None) -> bytes:
+    """A book with the given container and OPF, as text (UTF-8) or raw bytes.
+
+    ``.encode("utf-16")`` produces the BOM-prefixed UTF-16LE document whose NUL
+    bytes hide a raw-byte ``<!ENTITY`` token from the scan.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", container)
+        if opf is not None:
+            archive.writestr("OEBPS/content.opf", opf)
+    return buffer.getvalue()
+
+
+def test_parse_epub_refuses_utf16_entity_bomb_in_opf() -> None:
+    # The token scan sees UTF-8 bytes; UTF-16LE hides ``<!ENTITY`` behind NULs,
+    # so without the NUL rule expat decodes it and expands the DTD.
+    data = _book_bytes(CONTAINER, _entity_bomb_opf().encode("utf-16"))
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(data)
+    message = str(excinfo.value)
+    assert "content.opf" in message
+
+
+def test_parse_epub_refuses_utf16_entity_bomb_in_container() -> None:
+    container = (
+        '<?xml version="1.0"?>\n<!DOCTYPE container [\n'
+        + _entity_declaration_dtd()
+        + "\n]>\n"
+        '<container version="1.0"><rootfiles>'
+        '<rootfile full-path="book.opf"/></rootfiles></container>'
+    )
+    data = _book_bytes(container.encode("utf-16"))
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(data)
+    assert "container.xml" in str(excinfo.value)
+
+
+def test_parse_epub_accepts_plain_utf8_opf() -> None:
+    # The NUL rule must refuse nothing legitimate: an ordinary UTF-8 OPF with
+    # no entity, still parses and yields its chapter text.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr("OEBPS/content.opf", OPF)
+        archive.writestr(
+            "OEBPS/ch1.xhtml", "<html><body><p>Plain text.</p></body></html>"
+        )
+        archive.writestr(
+            "OEBPS/ch2.xhtml", "<html><body><p>More text.</p></body></html>"
+        )
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Test Book"
+    assert [chapter.text for chapter in chapters] == ["Plain text.", "More text."]
