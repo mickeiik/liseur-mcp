@@ -142,7 +142,9 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         }
 
     @mcp.tool()
-    async def list_highlights(book_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+    async def list_highlights(
+        book_id: str | None = None, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
         """List highlights, notes and bookmarks.
 
         With book_id: the annotations of that book, in the server's document
@@ -155,11 +157,21 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         Without book_id: every live annotation on the account, most recently
         changed first (by the server's internal sequence), each carrying its
         work_id. Both branches return at most limit annotations (1-500, cap
-        500); a limit below 1 is refused. count, total and truncated are
-        reported.
+        500); a limit below 1 and an offset below 0 are refused. count, total
+        and truncated are reported; total is the size of the whole set and does
+        not depend on limit or offset, while truncated says more annotations
+        remain beyond this page.
+
+        Paging: pass the next_offset of a previous page as offset to read on;
+        next_offset is present only when more annotations remain. The list is
+        fetched fresh on every call, so if annotations change between pages an
+        item can shift — pass back the next_offset you were given rather than
+        computing your own.
         """
         if limit < 1:
             raise ValueError(f"limit must be between 1 and {MAX_HIGHLIGHTS}")
+        if offset < 0:
+            raise ValueError("offset must be 0 or greater")
         if book_id:
             resolution = await client.resolve_book(book_id)
             if resolution.get("confidence") == "low":
@@ -182,13 +194,19 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
                 key=lambda annotation: annotation["seq"],
                 reverse=True,
             )
-        selected = annotations[: min(limit, MAX_HIGHLIGHTS)]
-        return {
+        start = min(offset, len(annotations))
+        selected = annotations[start : start + min(limit, MAX_HIGHLIGHTS)]
+        more = start + len(selected) < len(annotations)
+        result: dict[str, Any] = {
             "count": len(selected),
             "total": len(annotations),
-            "truncated": len(annotations) > len(selected),
+            "truncated": more,
+            "offset": start,
             "annotations": [_annotation_view(annotation) for annotation in selected],
         }
+        if more:
+            result["next_offset"] = start + len(selected)
+        return result
 
     @mcp.tool()
     async def get_book_text(

@@ -327,3 +327,99 @@ def test_search_books_forwards_query_and_merges_two_folders() -> None:
     assert result["count"] == 3
     assert result["truncated"] is False
     assert searches == [{"q": "dune", "limit": "10"}, {"q": "dune", "limit": "10"}]
+
+
+def test_list_highlights_account_wide_pages_cover_every_annotation_once() -> None:
+    rows = [
+        {"id": f"a{i}", "kind": "highlight", "work_id": "w1", "seq": i, "rev": 1}
+        for i in range(1, 1201)
+    ]
+    mcp = _server(_changes_handler(rows))
+
+    first = _call(mcp, "list_highlights", {"limit": 500})
+    assert first["count"] == 500
+    assert first["total"] == 1200
+    assert first["offset"] == 0
+    assert first["truncated"] is True
+    assert first["next_offset"] == 500
+
+    second = _call(mcp, "list_highlights", {"limit": 500, "offset": 500})
+    assert second["count"] == 500
+    assert second["offset"] == 500
+    assert second["next_offset"] == 1000
+
+    third = _call(mcp, "list_highlights", {"limit": 500, "offset": 1000})
+    assert third["count"] == 200
+    assert third["offset"] == 1000
+    assert third["truncated"] is False
+    assert "next_offset" not in third
+
+    walked = [
+        annotation["id"]
+        for page in (first, second, third)
+        for annotation in page["annotations"]
+    ]
+    assert walked == [f"a{i}" for i in range(1200, 0, -1)]
+    assert len(set(walked)) == len(walked) == 1200
+
+
+def test_list_highlights_book_scoped_pages_in_document_order() -> None:
+    rows = [
+        {"id": f"b{i}", "kind": "highlight", "work_id": "w1", "seq": i, "rev": 1}
+        for i in range(5)
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/resolve"):
+            return httpx.Response(200, json={"confidence": "high", "work_id": "w1"})
+        return httpx.Response(200, json={"annotations": rows})
+
+    mcp = _server(handler)
+
+    first = _call(mcp, "list_highlights", {"book_id": "b1", "limit": 2})
+    assert [annotation["id"] for annotation in first["annotations"]] == ["b0", "b1"]
+    assert first["count"] == 2
+    assert first["total"] == 5
+    assert first["offset"] == 0
+    assert first["next_offset"] == 2
+
+    second = _call(mcp, "list_highlights", {"book_id": "b1", "limit": 2, "offset": 2})
+    assert [annotation["id"] for annotation in second["annotations"]] == ["b2", "b3"]
+    assert second["offset"] == 2
+    assert second["next_offset"] == 4
+
+    third = _call(mcp, "list_highlights", {"book_id": "b1", "limit": 2, "offset": 4})
+    assert [annotation["id"] for annotation in third["annotations"]] == ["b4"]
+    assert third["count"] == 1
+    assert third["truncated"] is False
+    assert "next_offset" not in third
+
+
+def test_list_highlights_offset_past_the_end_is_an_empty_page() -> None:
+    mcp = _server(_changes_handler(_FEED))
+
+    result = _call(mcp, "list_highlights", {"offset": 999})
+    assert result["count"] == 0
+    assert result["total"] == 3
+    assert result["truncated"] is False
+    assert result["offset"] == 3
+    assert result["annotations"] == []
+    assert "next_offset" not in result
+
+
+def test_list_highlights_refuses_negative_offset() -> None:
+    mcp = _server(_changes_handler(_FEED))
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "list_highlights", {"offset": -1})
+    assert "offset must be" in str(excinfo.value)
+
+
+def test_list_highlights_total_ignores_offset_and_limit() -> None:
+    mcp = _server(_changes_handler(_FEED))
+
+    one = _call(mcp, "list_highlights", {"limit": 1})
+    two = _call(mcp, "list_highlights", {"limit": 2, "offset": 1})
+    assert one["total"] == two["total"] == 3
+    assert one["count"] == 1
+    assert two["count"] == 2
