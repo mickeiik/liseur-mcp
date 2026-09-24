@@ -33,12 +33,12 @@ Mint a dedicated device token with exactly:
 
 ```sh
 uv sync
-export LISEUR_URL=https://books.example.ts.net
+export LISEUR_URL=https://books.example.com
 export LISEUR_TOKEN=...
 uv run liseur-mcp
 ```
 
-opencode (`opencode.json`), pointing at the venv binary so no uv lookup happens
+opencode example (`opencode.json`), pointing at the venv binary so no uv lookup happens
 at startup:
 
 ```jsonc
@@ -49,7 +49,7 @@ at startup:
         "type": "local",
         "command": ["/path/to/liseur-mcp/.venv/bin/liseur-mcp"],
         "environment": {
-          "LISEUR_URL": "https://books.example.ts.net",
+          "LISEUR_URL": "https://books.example.com",
           "LISEUR_TOKEN": "{env:LISEUR_TOKEN}"
         }
       }
@@ -65,13 +65,13 @@ export MCP_TRANSPORT=streamable-http
 export MCP_HOST=0.0.0.0
 export MCP_AUTH_TOKEN=...   # required: the endpoint has no anonymous mode
 # every Host header a client reaches this server under; `name:*` accepts any port
-export MCP_ALLOWED_HOSTS=books.example.ts.net,books.example.ts.net:*,localhost:*,127.0.0.1:*
+export MCP_ALLOWED_HOSTS=books.example.com,books.example.com:*,localhost:*,127.0.0.1:*
 export LISEUR_URL=... LISEUR_TOKEN=...
 uv run liseur-mcp
 ```
 
 Clients connect to `http://<host>:8000/mcp` with
-`Authorization: Bearer $MCP_AUTH_TOKEN`. In opencode:
+`Authorization: Bearer $MCP_AUTH_TOKEN`.
 
 ```jsonc
 {
@@ -97,7 +97,7 @@ docker build -t liseur-mcp .
 docker run -d --name liseur-mcp --restart unless-stopped \
   -e MCP_TRANSPORT=streamable-http -e MCP_HOST=0.0.0.0 \
   -e MCP_AUTH_TOKEN -e LISEUR_URL -e LISEUR_TOKEN \
-  -e MCP_ALLOWED_HOSTS=books.example.ts.net,books.example.ts.net:*,localhost:*,127.0.0.1:* \
+  -e MCP_ALLOWED_HOSTS=books.example.com,books.example.com:*,localhost:*,127.0.0.1:* \
   -p 8000:8000 liseur-mcp
 ```
 
