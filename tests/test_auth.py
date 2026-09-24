@@ -125,6 +125,14 @@ def test_unrelated_path_passes_through() -> None:
     assert recorder.calls == 1
 
 
+def test_unrelated_path_under_a_root_path_also_passes_through() -> None:
+    # Only the MCP route is gated: a prefix must not turn every path into it.
+    recorder = _Recorder()
+    status, _ = _send(_middleware(recorder), _scope("/liseur/healthz", root_path="/liseur"))
+    assert status == 200
+    assert recorder.calls == 1
+
+
 def _real_app() -> BearerAuthMiddleware:
     settings = Settings(
         LISEUR_URL="http://liseur.test",
@@ -170,3 +178,16 @@ def test_real_server_wiring_rejects_unauthenticated_with_root_path() -> None:
             headers={"Accept": "application/json, text/event-stream"},
         )
         assert response.status_code == 401
+
+        # The prefix must not lock the legitimate client out either: a fix that
+        # denied every prefixed request would pass the assertion above.
+        authenticated = test_client.post(
+            "/liseur/mcp",
+            json=INITIALIZE,
+            headers={
+                "Authorization": f"Bearer {TOKEN}",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+        assert authenticated.status_code == 200
+        assert authenticated.json()["result"]["serverInfo"]["name"] == "liseur"

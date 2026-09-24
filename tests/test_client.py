@@ -80,6 +80,28 @@ def test_annotation_changes_collapses_same_id_edits_and_late_tombstones() -> Non
     assert annotations[0]["rev"] == 2
 
 
+def test_annotation_changes_stops_when_a_page_cannot_advance_the_cursor() -> None:
+    seen_since: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # A server that ignores `since` and keeps claiming there is more.
+        seen_since.append(request.url.params["since"])
+        if len(seen_since) > 3:
+            raise AssertionError("cursor never advanced: the pull is spinning")
+        return httpx.Response(
+            200,
+            json={
+                "annotations": [{"id": "a1", "kind": "note", "rev": 1, "seq": 1}],
+                "high_water": 1,
+                "has_more": True,
+            },
+        )
+
+    annotations = asyncio.run(_client(httpx.MockTransport(handler)).annotation_changes())
+    assert seen_since == ["0", "1"]
+    assert [annotation["id"] for annotation in annotations] == ["a1"]
+
+
 def test_download_returns_bytes() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
