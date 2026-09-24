@@ -254,7 +254,7 @@ def test_parse_epub_rejects_oversized_container() -> None:
             "META-INF/container.xml",
             '<container version="1.0"><rootfiles>'
             '<rootfile full-path="book.opf"/></rootfiles></container>'
-            + "x" * (17 * 1024 * 1024),
+            + "x" * (1 * 1024 * 1024 + 1),
         )
         archive.writestr("book.opf", "<package/>")
     with pytest.raises(ValueError) as excinfo:
@@ -271,10 +271,46 @@ def test_parse_epub_rejects_oversized_opf() -> None:
             '<container version="1.0"><rootfiles>'
             '<rootfile full-path="book.opf"/></rootfiles></container>',
         )
-        archive.writestr("book.opf", "<package>" + "x" * (17 * 1024 * 1024))
+        archive.writestr("book.opf", "<package>" + "x" * (1 * 1024 * 1024 + 1))
     with pytest.raises(ValueError) as excinfo:
         parse_epub(buffer.getvalue())
     assert "book.opf" in str(excinfo.value)
+
+
+def test_parse_epub_accepts_metadata_just_under_the_cap() -> None:
+    # A container padded to just under 1 MiB must still parse: the tighter
+    # metadata cap must not be so low that real books break.
+    pad = "x" * (1 * 1024 * 1024 - len(CONTAINER) - 16)
+    container = CONTAINER.replace("</container>", f"<!--{pad}--></container>")
+    assert len(container) < 1 * 1024 * 1024
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr("OEBPS/content.opf", OPF)
+        archive.writestr("OEBPS/ch1.xhtml", "<html><body><p>Under cap.</p></body></html>")
+        archive.writestr("OEBPS/ch2.xhtml", "<html><body><p>Two.</p></body></html>")
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Test Book"
+    assert [chapter.text for chapter in chapters] == ["Under cap.", "Two."]
+
+
+def test_parse_epub_refuses_non_deflate_metadata_compression() -> None:
+    # The cap only bounds DEFLATE output; a BZIP2 entry must be refused before
+    # decompression, so a highly compressible payload never expands in memory.
+    payload = "x" * (4 * 1024 * 1024)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml", payload, compress_type=zipfile.ZIP_BZIP2
+        )
+        archive.writestr("book.opf", "<package/>")
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    message = str(excinfo.value)
+    assert "container.xml" in message
+    assert "unsupported compression" in message
 
 
 def test_parse_epub_enforces_book_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -303,6 +339,41 @@ def test_parse_epub_enforces_book_budget(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(ValueError) as excinfo:
         parse_epub(data)
     assert "Budget" in str(excinfo.value)
+
+
+def test_parse_epub_budget_counts_bytes_actually_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Declared sizes lie LARGE here, so their sum (3 x 15 MiB) exceeds the
+    # 20 MiB budget while the bytes actually read sum to a few KiB. A correct
+    # (bytes-read) budget accepts the book; a declared-size budget would refuse.
+    monkeypatch.setattr(epub, "_MAX_BOOK_BYTES", 20 * 1024 * 1024)
+    body = "<html><body><p>" + "y" * 1024 + "</p></body></html>"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr(
+            "OEBPS/content.opf",
+            '<package><metadata><title>Honest</title></metadata>'
+            "<manifest>"
+            '<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="b" href="b.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="c" href="c.xhtml" media-type="application/xhtml+xml"/>'
+            "</manifest>"
+            '<spine><itemref idref="a"/><itemref idref="b"/><itemref idref="c"/></spine>'
+            "</package>",
+        )
+        archive.writestr("OEBPS/a.xhtml", body)
+        archive.writestr("OEBPS/b.xhtml", body)
+        archive.writestr("OEBPS/c.xhtml", body)
+    data = buffer.getvalue()
+    for name in ("OEBPS/a.xhtml", "OEBPS/b.xhtml", "OEBPS/c.xhtml"):
+        data = _forge_declared_size(data, name, 15 * 1024 * 1024)
+    title, chapters = parse_epub(data)
+    assert title == "Honest"
+    assert len(chapters) == 3
+    assert all(chapter.text == "y" * 1024 for chapter in chapters)
 
 
 def test_parse_epub_finds_raw_percent_named_entry() -> None:

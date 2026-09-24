@@ -32,8 +32,13 @@ _CHAPTER_MEDIA_TYPES = frozenset(
 # ``ZipInfo.file_size`` comes from the archive and is attacker-controlled, so it
 # cannot gate a read: CPython's ``read(-1)`` decompresses the whole stream and
 # only then slices. These caps are enforced on the bytes actually read, via a
-# capped ``handle.read(cap + 1)`` (which bounds ``decompressobj.decompress``),
-# so they limit how much a malicious book can make us allocate.
+# capped ``handle.read(cap + 1)``. That bound holds only for DEFLATE, whose
+# ``max_length`` CPython honours inside the zlib call; the BZIP2 and LZMA
+# branches decompress with no limit and slice afterwards, so entries using them
+# are refused rather than read (see ``_read_entry``). A real container.xml is a
+# couple of KiB and a real OPF well under a few hundred KiB, so the metadata cap
+# is deliberately far tighter than the per-document one.
+_MAX_METADATA_BYTES = 1 * 1024 * 1024
 _MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 _MAX_BOOK_BYTES = 64 * 1024 * 1024
 
@@ -100,6 +105,14 @@ def _iter_local(root: ElementTree.Element, name: str) -> Iterator[ElementTree.El
 
 def _read_entry(archive: zipfile.ZipFile, name: str, cap: int) -> bytes:
     """Read one entry, bounding decompressed output to ``cap`` bytes."""
+    # ``getinfo`` raises ``KeyError`` for a missing entry, which callers rely on
+    # (``parse_epub`` uses ``_has_entry`` to fall back between href spellings).
+    info = archive.getinfo(name)
+    if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise ValueError(
+            f"EPUB entry {name!r} uses unsupported compression "
+            f"(type {info.compress_type}); the cap cannot bound it, so it is refused"
+        )
     try:
         with archive.open(name) as handle:
             data = handle.read(cap + 1)
@@ -123,7 +136,7 @@ def _has_entry(archive: zipfile.ZipFile, name: str) -> bool:
 
 def _opf_path(archive: zipfile.ZipFile) -> str:
     container = ElementTree.fromstring(
-        _read_entry(archive, _CONTAINER_PATH, _MAX_DOCUMENT_BYTES)
+        _read_entry(archive, _CONTAINER_PATH, _MAX_METADATA_BYTES)
     )
     for rootfile in _iter_local(container, "rootfile"):
         full_path = rootfile.get("full-path")
@@ -136,7 +149,7 @@ def parse_epub(data: bytes) -> tuple[str | None, list[Chapter]]:
     """Return the book title and its spine documents as chapters."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         opf_path = _opf_path(archive)
-        package = ElementTree.fromstring(_read_entry(archive, opf_path, _MAX_DOCUMENT_BYTES))
+        package = ElementTree.fromstring(_read_entry(archive, opf_path, _MAX_METADATA_BYTES))
         opf_dir = posixpath.dirname(opf_path)
         manifest = {
             item.get("id"): (item.get("href"), item.get("media-type"))

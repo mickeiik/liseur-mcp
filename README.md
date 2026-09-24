@@ -64,8 +64,8 @@ at startup:
 export MCP_TRANSPORT=streamable-http
 export MCP_HOST=0.0.0.0
 export MCP_AUTH_TOKEN=...   # required: the endpoint has no anonymous mode
-# every Host header a client reaches this server under; anything else is 421
-export MCP_ALLOWED_HOSTS=books.example.ts.net,localhost,127.0.0.1
+# every Host header a client reaches this server under; `name:*` accepts any port
+export MCP_ALLOWED_HOSTS=books.example.ts.net,books.example.ts.net:*,localhost:*,127.0.0.1:*
 export LISEUR_URL=... LISEUR_TOKEN=...
 uv run liseur-mcp
 ```
@@ -97,7 +97,7 @@ docker build -t liseur-mcp .
 docker run -d --name liseur-mcp --restart unless-stopped \
   -e MCP_TRANSPORT=streamable-http -e MCP_HOST=0.0.0.0 \
   -e MCP_AUTH_TOKEN -e LISEUR_URL -e LISEUR_TOKEN \
-  -e MCP_ALLOWED_HOSTS=books.example.ts.net,localhost,127.0.0.1 \
+  -e MCP_ALLOWED_HOSTS=books.example.ts.net,books.example.ts.net:*,localhost:*,127.0.0.1:* \
   -p 8000:8000 liseur-mcp
 ```
 
@@ -118,8 +118,9 @@ docker run -d --name liseur-mcp --restart unless-stopped \
 ### If a client cannot connect
 
 - `421 Invalid Host header` — the request arrived under a Host the transport
-  refuses. Add the name you connect with (a LAN address, the proxy's hostname)
-  to `MCP_ALLOWED_HOSTS`.
+  refuses. Add the name you connect with to `MCP_ALLOWED_HOSTS`; entries match
+  exactly, so write `name:*` to accept any port (`localhost` alone does not
+  match `Host: localhost:8000`).
 - `403 Invalid Origin header` — the client sends an `Origin` and
   `MCP_ALLOWED_ORIGINS` is empty; list that origin.
 - `403 {"error":"https required"}` — that comes from the liseur-sync instance,
