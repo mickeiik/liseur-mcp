@@ -171,17 +171,20 @@ def test_get_book_text_refuses_bad_chapter_and_non_epub() -> None:
 def test_get_book_text_refuses_an_epub_over_the_buffer_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(server_module, "MAX_EPUB_BYTES", 1000)
+    cap = 1024 * 1024
+    monkeypatch.setattr(server_module, "MAX_EPUB_BYTES", cap)
 
     def oversized(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, content=b"x" * 2000, headers={"content-type": "application/epub+zip"}
+            200,
+            content=b"x" * (cap + 1),
+            headers={"content-type": "application/epub+zip"},
         )
 
     mcp = _server(_download_handler(oversized))
     with pytest.raises(ToolError) as excinfo:
         _call(mcp, "get_book_text", {"book_id": "b1"})
-    assert "1000 byte cap" in str(excinfo.value)
+    assert "1 MiB cap" in str(excinfo.value)
 
 
 def _changes_handler(rows: list[dict[str, Any]]) -> Handler:

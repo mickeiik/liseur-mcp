@@ -491,3 +491,60 @@ def test_parse_epub_rejects_malformed_metadata(broken: str) -> None:
         archive.writestr("book.opf", opf)
     with pytest.raises(ElementTree.ParseError):
         parse_epub(buffer.getvalue())
+
+
+def _metadata_doc(elements: int) -> bytes:
+    """An OPF-like document whose start-tag count is exactly ``elements``.
+
+    ``elements`` counts the root, matching ``_BoundedTreeBuilder``, which counts
+    every ``start`` event including the root.
+    """
+    assert elements >= 1
+    return f"<package>{'<i/>' * (elements - 1)}</package>".encode()
+
+
+def test_metadata_element_budget_is_exact() -> None:
+    # Fixed literal counts (root included), deliberately NOT derived from
+    # ``_MAX_METADATA_ELEMENTS``: if the constant moves, one of these two
+    # assertions must break, which is what pins it. 16 385 tiny elements is a
+    # ~64 KiB document, cheap to build and parse.
+    accepted = _metadata_doc(16_384)
+    refused = _metadata_doc(16_385)
+    root = epub._parse_metadata(accepted, "content.opf", epub._MAX_METADATA_ELEMENTS)
+    assert sum(1 for _ in root.iter()) == 16_384
+    with pytest.raises(ValueError) as excinfo:
+        epub._parse_metadata(refused, "content.opf", epub._MAX_METADATA_ELEMENTS)
+    message = str(excinfo.value)
+    assert "content.opf" in message
+    assert str(epub._MAX_METADATA_ELEMENTS) in message
+
+
+def test_metadata_refusal_stops_feeding_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deterministic proxy for the memory fix: a bomb refused part-way through
+    # the document must not have its whole buffer handed to expat. On a single
+    # ``feed(data)`` this observes the full document; with slicing it stops at
+    # the first slice, where 16 385 three-byte tags already sit.
+    opf = _bomb("a", 149_000).encode()
+    real_parser = ElementTree.XMLParser
+    fed = 0
+
+    class CountingParser:
+        def __init__(self, target: ElementTree.TreeBuilder) -> None:
+            self._parser = real_parser(target=target)
+
+        def feed(self, data: bytes) -> None:
+            nonlocal fed
+            fed += len(data)
+            self._parser.feed(data)
+
+        def close(self) -> ElementTree.Element:
+            return self._parser.close()
+
+    monkeypatch.setattr(epub.ElementTree, "XMLParser", CountingParser)
+    with pytest.raises(ValueError) as excinfo:
+        epub._parse_metadata(opf, "content.opf", epub._MAX_METADATA_ELEMENTS)
+    assert str(epub._MAX_METADATA_ELEMENTS) in str(excinfo.value)
+    assert fed == epub._FEED_SLICE_BYTES
+    assert fed < len(opf)

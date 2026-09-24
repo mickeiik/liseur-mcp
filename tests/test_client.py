@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Iterable
 
 import httpx
 import pytest
@@ -10,6 +11,23 @@ from liseur_mcp.client import LiseurClient, LiseurError
 
 def _client(transport: httpx.AsyncBaseTransport) -> LiseurClient:
     return LiseurClient("http://liseur.test", "token", transport=transport)
+
+
+class _Stream(httpx.AsyncByteStream):
+    """A one-shot async body, so a test response really streams chunk by chunk."""
+
+    def __init__(self, chunks: Iterable[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+
+
+def _streamed(
+    status: int, chunks: Iterable[bytes], headers: dict[str, str] | None = None
+) -> httpx.Response:
+    return httpx.Response(status, stream=_Stream(chunks), headers=headers or {})
 
 
 def test_folders_follow_cursor_pagination() -> None:
@@ -117,16 +135,136 @@ def test_download_returns_bytes() -> None:
 
 
 def test_download_refuses_a_body_over_the_cap() -> None:
+    cap = 1024 * 1024
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content=b"x" * 100,
+            content=b"x" * (cap + 1),
             headers={"content-type": "application/epub+zip"},
         )
 
     with pytest.raises(ValueError) as excinfo:
-        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=10))
-    assert "10 byte cap" in str(excinfo.value)
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=cap))
+    assert "1 MiB cap" in str(excinfo.value)
+
+
+def test_download_returns_a_multi_chunk_body_under_the_cap() -> None:
+    payload = b"x" * 250
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(
+            200,
+            [payload[0:100], payload[100:200], payload[200:250]],
+            {"content-type": "application/epub+zip"},
+        )
+
+    result = asyncio.run(
+        _client(httpx.MockTransport(handler)).download("b1", max_bytes=300)
+    )
+    assert result == payload
+
+
+def test_download_accepts_a_body_exactly_at_the_cap() -> None:
+    payload = b"y" * 256
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(
+            200,
+            [payload[0:100], payload[100:200], payload[200:256]],
+            {"content-type": "application/epub+zip"},
+        )
+
+    result = asyncio.run(
+        _client(httpx.MockTransport(handler)).download("b1", max_bytes=256)
+    )
+    assert result == payload
+
+
+def test_download_refuses_a_multi_chunk_body_one_byte_over_the_cap() -> None:
+    payload = b"z" * 257
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(
+            200,
+            [payload[0:100], payload[100:200], payload[200:257]],
+            {"content-type": "application/epub+zip"},
+        )
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=256))
+    assert "256 byte cap" in str(excinfo.value)
+
+
+def test_download_streamed_error_still_reports_the_liseur_message() -> None:
+    body = b'{"error": "boom"}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(500, [body[:5], body[5:]], {"content-type": "application/json"})
+
+    with pytest.raises(LiseurError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=1024))
+    assert excinfo.value.status == 500
+    assert "boom" in str(excinfo.value)
+
+
+def test_download_refuses_a_compressed_body_on_the_capped_path() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(
+            200,
+            [b"x" * 10],
+            {"content-type": "application/epub+zip", "content-encoding": "gzip"},
+        )
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=1024))
+    assert "gzip" in str(excinfo.value)
+
+
+def test_download_accepts_an_identity_encoded_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(
+            200,
+            [b"epub-bytes"],
+            {"content-type": "application/epub+zip", "content-encoding": "identity"},
+        )
+
+    result = asyncio.run(
+        _client(httpx.MockTransport(handler)).download("b1", max_bytes=1024)
+    )
+    assert result == b"epub-bytes"
+
+
+def test_download_refuses_an_oversized_json_body_by_the_cap_not_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(200, [b"{" * 100], {"content-type": "application/json"})
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=64))
+    assert "64 byte cap" in str(excinfo.value)
+
+
+def test_download_streamed_error_body_is_bounded_but_reported() -> None:
+    body = b"A" * (200 * 1024)
+    chunks = [body[i : i + 8192] for i in range(0, len(body), 8192)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed(500, chunks, {"content-type": "text/plain"})
+
+    with pytest.raises(LiseurError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=1024))
+    assert excinfo.value.status == 500
+    assert "liseur-sync answered 500" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("cap", [None, 0, -1])
+def test_download_rejects_a_non_positive_cap(cap: int | None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x")
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_client(httpx.MockTransport(handler)).download("b1", max_bytes=cap))
+    assert "positive integer" in str(excinfo.value)
 
 
 def test_download_error_body_over_the_cap_still_reports_liseur_error() -> None:

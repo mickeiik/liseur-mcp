@@ -44,9 +44,17 @@ _MAX_BOOK_BYTES = 64 * 1024 * 1024
 # The byte cap above bounds the input, not the tree ``ElementTree`` builds from
 # it: a Python object per element means a few KiB of tiny nested tags can
 # allocate tens of MiB. A real OPF is 50-500 elements and a huge omnibus a few
-# thousand, so 16 384 is generous, while a pathological file of tiny nested tags
-# hits it almost immediately.
+# thousand, so 16 384 is generous: it accepts roughly 8 000 spine items when the
+# OPF holds nothing else, fewer as image, font and CSS manifest entries are
+# added. A pathological deeply nested file is refused while the tree is still
+# small, but expat still walks its own tag stack, bounded only by the feed slice
+# in ``_parse_metadata``; entity expansion is left to pyexpat's own
+# amplification protection.
 _MAX_METADATA_ELEMENTS = 16_384
+# ``XMLParser.feed`` hands each slice to expat, so a refusal raised by the
+# element bound above stops consuming the rest of a large document. Bounded work
+# in flight, not correctness: an accepted document is still parsed in full.
+_FEED_SLICE_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -171,12 +179,16 @@ class _BoundedTreeBuilder(ElementTree.TreeBuilder):
 def _parse_metadata(data: bytes, name: str, max_elements: int) -> ElementTree.Element:
     """Parse one metadata document, refusing a runaway element count.
 
+    The input is handed to expat in ``_FEED_SLICE_BYTES`` slices so a refusal
+    from the bounded builder stops consuming the remaining buffer.
     ``parser.close()`` finalises the parse (surfacing a truncated document as
     the same ``ElementTree.ParseError`` ``fromstring`` raised) and returns the
     root that the bounded builder's ``close()`` hands back.
     """
     parser = ElementTree.XMLParser(target=_BoundedTreeBuilder(name, max_elements))
-    parser.feed(data)
+    view = memoryview(data)
+    for start in range(0, len(view), _FEED_SLICE_BYTES):
+        parser.feed(view[start : start + _FEED_SLICE_BYTES])
     return parser.close()
 
 
