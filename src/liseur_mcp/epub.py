@@ -47,9 +47,8 @@ _MAX_BOOK_BYTES = 64 * 1024 * 1024
 # thousand, so 16 384 is generous: it accepts roughly 8 000 spine items when the
 # OPF holds nothing else, fewer as image, font and CSS manifest entries are
 # added. A pathological deeply nested file is refused while the tree is still
-# small, but expat still walks its own tag stack, bounded only by the feed slice
-# in ``_parse_metadata``; entity expansion is left to pyexpat's own
-# amplification protection.
+# small; the feed slice in ``_parse_metadata`` bounds the work in flight, and an
+# entity declaration is refused before parsing even starts.
 _MAX_METADATA_ELEMENTS = 16_384
 # ``XMLParser.feed`` hands each slice to expat, so a refusal raised by the
 # element bound above stops consuming the rest of a large document. Bounded work
@@ -177,7 +176,16 @@ class _BoundedTreeBuilder(ElementTree.TreeBuilder):
 
 
 def _parse_metadata(data: bytes, name: str, max_elements: int) -> ElementTree.Element:
-    """Parse one metadata document, refusing a runaway element count.
+    """Parse one metadata document, refusing entities and a runaway element count.
+
+    An ``<!ENTITY`` declaration is refused before parsing. A DTD-declared
+    entity is the whole of a billion-laughs expansion, and an EPUB package
+    document or container is not supposed to carry one: the bytes are tiny
+    while the expanded text runs to megabytes, and pyexpat's own amplification
+    guard fires only after the work is done. The check is one ``bytes.find`` on
+    the already byte-capped bytes. A plain ``<!DOCTYPE`` without entities still
+    parses. Spine documents are not checked here: they stream through
+    ``HTMLParser``, which does not expand custom entities.
 
     The input is handed to expat in ``_FEED_SLICE_BYTES`` slices so a refusal
     from the bounded builder stops consuming the remaining buffer.
@@ -185,6 +193,11 @@ def _parse_metadata(data: bytes, name: str, max_elements: int) -> ElementTree.El
     the same ``ElementTree.ParseError`` ``fromstring`` raised) and returns the
     root that the bounded builder's ``close()`` hands back.
     """
+    if b"<!ENTITY" in data:
+        raise ValueError(
+            f"EPUB entry {name!r} declares an XML entity; "
+            "entity declarations are not supported"
+        )
     parser = ElementTree.XMLParser(target=_BoundedTreeBuilder(name, max_elements))
     view = memoryview(data)
     for start in range(0, len(view), _FEED_SLICE_BYTES):

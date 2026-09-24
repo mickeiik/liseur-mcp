@@ -78,7 +78,7 @@ class LiseurClient:
     async def _error_body(response: httpx.Response) -> str:
         body = bytearray()
         async for chunk in response.aiter_bytes():
-            body += chunk
+            body += chunk[: _ERROR_BODY_BYTES - len(body)]
             if len(body) >= _ERROR_BODY_BYTES:
                 break
         return bytes(body).decode(response.encoding or "utf-8", errors="replace")
@@ -97,14 +97,14 @@ class LiseurClient:
         # ask for identity and refuse any other encoding below.
         headers = {**kwargs.pop("headers", {}), "Accept-Encoding": "identity"}
         async with self._http.stream(method, path, headers=headers, **kwargs) as response:
-            if not response.is_success:
-                self._raise_for_status(response, await self._error_body(response))
             encoding = response.headers.get("content-encoding", "").strip().lower()
             if encoding and encoding != "identity":
                 raise ValueError(
                     f"response from {path} is {encoding}-encoded; refusing to buffer it "
                     "because a compressed body cannot be bounded by the cap"
                 )
+            if not response.is_success:
+                self._raise_for_status(response, await self._error_body(response))
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 if len(body) + len(chunk) > max_bytes:
@@ -183,8 +183,12 @@ class LiseurClient:
         return await self._request("GET", "/v1/insights/works", params={"range": span})
 
     async def download(self, book_id: str, *, max_bytes: int | None) -> bytes:
-        if max_bytes is None or max_bytes <= 0:
-            raise ValueError("max_bytes must be a positive integer")
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or max_bytes <= 0
+        ):
+            raise ValueError("max_bytes must be a positive integer number of bytes")
         return await self._request(
             "GET", f"/v1/books/{book_id}/download", max_bytes=max_bytes
         )

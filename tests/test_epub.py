@@ -546,5 +546,100 @@ def test_metadata_refusal_stops_feeding_the_buffer(
     with pytest.raises(ValueError) as excinfo:
         epub._parse_metadata(opf, "content.opf", epub._MAX_METADATA_ELEMENTS)
     assert str(epub._MAX_METADATA_ELEMENTS) in str(excinfo.value)
-    assert fed == epub._FEED_SLICE_BYTES
-    assert fed < len(opf)
+    assert fed <= epub._FEED_SLICE_BYTES
+    # Refused inside one slice, far short of the whole document. Deliberately
+    # not ``== _FEED_SLICE_BYTES``: the property is "refusal happens within a
+    # slice", which holds even if the slice size changes or feeding is refactored.
+    assert fed < len(opf) // 4
+
+
+def _entity_declaration_dtd(levels: int = 8) -> str:
+    """A billion-laughs DTD: each entity doubles the one before it.
+
+    Eight doublings turn a few hundred bytes of declarations into ``2 ** 8``
+    copies of the base text once expanded.
+    """
+    declarations = ['<!ENTITY e0 "lol">']
+    for i in range(1, levels + 1):
+        declarations.append(f'<!ENTITY e{i} "&e{i - 1};&e{i - 1};">')
+    return "\n".join(declarations)
+
+
+def _entity_bomb_opf() -> str:
+    return (
+        '<?xml version="1.0"?>\n<!DOCTYPE package [\n'
+        + _entity_declaration_dtd()
+        + "\n]>\n"
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        "<dc:title>&e8;</dc:title></metadata>"
+        "<manifest>"
+        '<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>'
+        "</manifest>"
+        '<spine><itemref idref="c1"/></spine></package>'
+    )
+
+
+def test_parse_epub_refuses_entity_declarations_in_opf() -> None:
+    opf = _entity_bomb_opf()
+    assert len(opf) < 1024  # tiny on disk, megabytes once expanded
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr("OEBPS/content.opf", opf)
+        archive.writestr("OEBPS/ch1.xhtml", "<html><body><p>Chapter.</p></body></html>")
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    message = str(excinfo.value)
+    assert "content.opf" in message
+    assert "entity" in message.lower()
+
+
+def test_parse_epub_refuses_entity_declarations_in_container() -> None:
+    container = (
+        '<?xml version="1.0"?>\n<!DOCTYPE container [\n'
+        + _entity_declaration_dtd()
+        + "\n]>\n"
+        '<container version="1.0"><rootfiles>'
+        '<rootfile full-path="book.opf"/></rootfiles></container>'
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr("book.opf", "<package/>")
+    with pytest.raises(ValueError) as excinfo:
+        parse_epub(buffer.getvalue())
+    message = str(excinfo.value)
+    assert "container.xml" in message
+    assert "entity" in message.lower()
+
+
+def test_parse_epub_accepts_a_doctype_without_entities() -> None:
+    # Over-rejection guard: a legitimate OPF with a plain DOCTYPE (no entity
+    # declarations) must still parse. XML 1.0 requires an uppercase ``<!ENTITY``
+    # keyword, so looking for that exact token cannot match a DOCTYPE.
+    opf = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<!DOCTYPE package PUBLIC "-//IDPF//DTD OEB 1.2 Package//EN" '
+        '"http://openebook.org/dtds/oeb-1.2/oebpkg12.dtd">\n'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        "<dc:title>Doctype</dc:title></metadata>"
+        "<manifest>"
+        '<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>'
+        '<item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>'
+        "</manifest>"
+        '<spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>'
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", CONTAINER)
+        archive.writestr("OEBPS/content.opf", opf)
+        archive.writestr("OEBPS/ch1.xhtml", "<html><body><p>First body.</p></body></html>")
+        archive.writestr("OEBPS/ch2.xhtml", "<html><body><p>Second body.</p></body></html>")
+    title, chapters = parse_epub(buffer.getvalue())
+    assert title == "Doctype"
+    assert [chapter.text for chapter in chapters] == ["First body.", "Second body."]
