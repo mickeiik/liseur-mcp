@@ -8,6 +8,19 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 
+def _route_path(scope: Scope) -> str:
+    """The path as Starlette's router sees it: root_path stripped from the front."""
+    path = scope.get("path", "")
+    root_path = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path) :]
+    return path
+
+
 class BearerAuthMiddleware:
     """Reject requests to the MCP endpoint without the shared bearer token.
 
@@ -22,7 +35,7 @@ class BearerAuthMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            path = scope.get("path", "")
+            path = _route_path(scope)
             if path == self._path or path.startswith(self._path + "/"):
                 headers = dict(scope.get("headers", []))
                 authorization = headers.get(b"authorization", b"")

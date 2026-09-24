@@ -98,10 +98,20 @@ class LiseurClient:
             page = await self._request(
                 "GET", "/v1/annotations/changes", params={"since": since, "limit": 500}
             )
-            annotations.extend(page.get("annotations", []))
-            since = page.get("high_water", since)
+            rows = page.get("annotations", [])
+            annotations.extend(rows)
+            next_since = rows[-1]["seq"] if rows else page.get("high_water", since)
+            if next_since <= since:
+                break
+            since = next_since
             if not page.get("has_more"):
-                return [annotation for annotation in annotations if not annotation.get("deleted")]
+                break
+        newest: dict[Any, dict[str, Any]] = {}
+        for annotation in annotations:
+            current = newest.get(annotation["id"])
+            if current is None or annotation.get("rev", 0) >= current.get("rev", 0):
+                newest[annotation["id"]] = annotation
+        return [annotation for annotation in newest.values() if not annotation.get("deleted")]
 
     async def insights_summary(self, span: str) -> dict[str, Any]:
         return await self._request("GET", "/v1/insights/summary", params={"range": span})

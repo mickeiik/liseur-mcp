@@ -30,24 +30,54 @@ def test_folders_follow_cursor_pagination() -> None:
     assert [folder["folder_id"] for folder in folders] == ["f1", "f2"]
 
 
-def test_annotation_changes_drops_tombstones_and_pages() -> None:
-    pages = {
-        0: {
-            "annotations": [
-                {"id": "a1", "kind": "highlight"},
-                {"id": "a2", "kind": "highlight", "deleted": True},
-            ],
-            "high_water": 7,
-            "has_more": True,
-        },
-        7: {"annotations": [{"id": "a3", "kind": "note"}], "high_water": 9, "has_more": False},
-    }
+def test_annotation_changes_follows_the_documented_cursor() -> None:
+    live = [{"id": f"a{i:04d}", "kind": "highlight", "rev": 1, "seq": i + 1} for i in range(600)]
+    rows = [*live, {"id": "tomb", "rev": 1, "seq": 601, "deleted": True}]
+    high_water = rows[-1]["seq"]  # the account's global max seq, constant on every page
+    seen_since: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=pages[int(request.url.params["since"])])
+        since = int(request.url.params["since"])
+        limit = int(request.url.params["limit"])
+        seen_since.append(since)
+        remaining = [row for row in rows if row["seq"] > since]
+        return httpx.Response(
+            200,
+            json={
+                "annotations": remaining[:limit],
+                "high_water": high_water,
+                "has_more": len(remaining) > limit,
+            },
+        )
 
     annotations = asyncio.run(_client(httpx.MockTransport(handler)).annotation_changes())
-    assert [annotation["id"] for annotation in annotations] == ["a1", "a3"]
+    assert seen_since == [0, 500]
+    assert [annotation["id"] for annotation in annotations] == [row["id"] for row in live]
+
+
+def test_annotation_changes_collapses_same_id_edits_and_late_tombstones() -> None:
+    rows = [
+        {"id": "a0", "kind": "note", "rev": 1, "seq": 1},
+        {"id": "a1", "kind": "note", "rev": 1, "seq": 2},
+        {"id": "a0", "kind": "note", "rev": 2, "seq": 3},
+        {"id": "a2", "kind": "note", "rev": 1, "seq": 4},
+        {"id": "a2", "rev": 2, "seq": 5, "deleted": True},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        since = int(request.url.params["since"])
+        return httpx.Response(
+            200,
+            json={
+                "annotations": [row for row in rows if row["seq"] > since],
+                "high_water": rows[-1]["seq"],
+                "has_more": False,
+            },
+        )
+
+    annotations = asyncio.run(_client(httpx.MockTransport(handler)).annotation_changes())
+    assert [annotation["id"] for annotation in annotations] == ["a0", "a1"]
+    assert annotations[0]["rev"] == 2
 
 
 def test_download_returns_bytes() -> None:
