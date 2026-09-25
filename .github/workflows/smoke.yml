@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Nothing uses git after checkout, and the later steps download and
           # run npm packages; do not leave GITHUB_TOKEN in the git config.
