@@ -1,0 +1,73 @@
+name: upstream-spec
+
+# Watches the liseur-sync API spec: the public upstream repo publishes
+# docs/openapi.yaml on main and has no tags or releases to watch instead.
+# On drift it files an issue -- it never pushes -- and fails the run so the
+# drift shows up in the Actions tab until someone updates the recorded hash.
+# workflow_dispatch with simulate_drift proves the issue path on demand.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      simulate_drift:
+        description: "Treat the spec as changed, to exercise the issue path"
+        type: boolean
+        default: false
+
+jobs:
+  spec-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Compare the recorded spec with upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIMULATE_DRIFT: ${{ inputs.simulate_drift }}
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/chmouel/liseur-sync/main/docs/openapi.yaml"
+          recorded=$(grep -v '^#' docs/upstream-openapi.sha | tr -d '[:space:]')
+          current=$(curl -fsSL --retry 3 "$url" | sha256sum | cut -d' ' -f1)
+          echo "recorded: $recorded"
+          echo "current : $current"
+          if [ "$recorded" = "$current" ] && [ "${SIMULATE_DRIFT:-false}" != "true" ]; then
+            echo "liseur-sync's spec is unchanged"
+            exit 0
+          fi
+
+          gh label create upstream-drift --force \
+            --description "liseur-sync changed something we follow" --color 1D76DB
+
+          body=$(printf '%s\n' \
+            "\`docs/upstream-openapi.sha\` records a spec that no longer matches [liseur-sync's docs/openapi.yaml](https://github.com/chmouel/liseur-sync/blob/main/docs/openapi.yaml)." \
+            "" \
+            "- recorded: \`$recorded\`" \
+            "- current : \`$current\`" \
+            "" \
+            "What changed upstream: https://github.com/chmouel/liseur-sync/commits/main/docs/openapi.yaml" \
+            "" \
+            "What to do here:" \
+            "1. Read the changed endpoints and schemas against \`src/liseur_mcp/client.py\` and the tool tests." \
+            "2. Run the tools against the real instance from the LAN (the one check CI cannot reach)." \
+            "3. Update the hash and date in \`docs/upstream-openapi.sha\`, then close this issue.")
+
+          existing=$(gh issue list --state open --label upstream-drift \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "issue #$existing is already open; adding a comment instead"
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Upstream liseur-sync OpenAPI spec changed" --body "$body" \
+              --label upstream-drift
+          fi
+
+          echo "::error::liseur-sync's OpenAPI spec changed; see the upstream-drift issue"
+          exit 1

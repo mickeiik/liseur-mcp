@@ -1,0 +1,37 @@
+version: 2
+
+# Dependency upkeep. Version updates only; security updates need no config.
+# Every PR lands through the gates in tests.yml, smoke.yml and conformance.yml,
+# plus `uv lock --check`.
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Minor and patch bumps arrive as one PR; majors (mcp, starlette, pytest)
+    # come one at a time, because they need a port or a constraint change.
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"

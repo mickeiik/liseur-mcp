@@ -180,6 +180,19 @@ uv sync
 
 The Inspector is pinned in the script (`INSPECTOR_VERSION`, default `2.8.0`).
 
+## Keeping up with upstream
+
+Dependencies are kept current by `.github/dependabot.yml` (uv, GitHub Actions
+and the Dockerfile base image), landing through the gates above.
+
+The liseur-sync API itself is watched by `.github/workflows/upstream-spec.yml`:
+weekly it hashes upstream's `docs/openapi.yaml` — upstream publishes no tags or
+releases, so the spec is the anchor — and compares it with the sha256 recorded
+in `docs/upstream-openapi.sha`. On a change it files an `upstream-drift` issue
+and fails the run; the fix is to re-read the changed endpoints against
+`src/liseur_mcp/client.py`, check the tools against the real instance (a
+LAN-side step CI cannot do), then update the hash and close the issue.
+
 ## Releasing
 
 The version lives in `pyproject.toml`, and the tag must match it.
