@@ -1,0 +1,35 @@
+name: smoke
+
+# End-to-end smoke tests against the shipped binary via the official MCP
+# Inspector CLI (see scripts/smoke.sh): real startup, both transports, tool
+# surface, schema portability. No liseur-sync instance needed -- tools/call
+# probes use invalid arguments, refused before any upstream request.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mcp-inspector-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing uses git after checkout, and the later steps download and
+          # run npm packages; do not leave GITHUB_TOKEN in the git config.
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Inspector smoke tests
+        run: ./scripts/smoke.sh
+
+      - name: Show server log on failure
+        if: failure()
+        run: cat /tmp/liseur-smoke-server.log 2>/dev/null || true

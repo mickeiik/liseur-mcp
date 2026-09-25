@@ -24,6 +24,10 @@ jobs:
       CONFORMANCE_AUTH_TOKEN: conformance-ci-token
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Nothing uses git after checkout, and the later steps download and
+          # run npm packages; do not leave GITHUB_TOKEN in the git config.
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v5
         with:

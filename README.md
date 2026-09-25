@@ -152,3 +152,19 @@ protocol-level scenarios never invoke the real tools.
 ./scripts/conformance-local.sh
 # or a single scenario: ./scripts/conformance-local.sh --scenario tools-list
 ```
+
+## Smoke tests
+
+`scripts/smoke.sh` (also run in CI by `.github/workflows/smoke.yml`) drives the
+shipped binary through the official
+[MCP Inspector CLI](https://github.com/modelcontextprotocol/inspector) — the
+real entry point, both transports, the 7-tool surface, schema portability and
+two invalid-argument refusals. Tools are only called with arguments that fail
+validation before any liseur-sync request, so no instance is needed.
+
+```sh
+uv sync
+./scripts/smoke.sh
+```
+
+The Inspector is pinned in the script (`INSPECTOR_VERSION`, default `2.8.0`).
