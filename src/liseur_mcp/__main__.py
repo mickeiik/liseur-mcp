@@ -21,7 +21,7 @@ def main() -> None:
         settings.token.get_secret_value(),
         settings.request_timeout,
     )
-    mcp = create_server(client, settings)
+    mcp = create_server(client)
     if settings.transport == "stdio":
         mcp.run(transport="stdio")
         return

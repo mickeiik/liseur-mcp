@@ -8,6 +8,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.shared.exceptions import MCPError
 from starlette.applications import Starlette
 
 from .client import LiseurClient
@@ -22,13 +23,15 @@ def _surface_failure(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitab
     as a bare "Error executing tool <name>", hiding the text that 1.x surfaced.
     Re-raising as ToolError restores the old contract for the anticipated
     ValueErrors below and for upstream LiseurError/httpx failures alike.
+    ToolError and MCPError pass through untouched: the SDK reserves the latter
+    for protocol-level answers (the SDK's own dispatch does the same).
     """
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
-        except ToolError:
+        except (ToolError, MCPError):
             raise
         except Exception as exc:
             raise ToolError(str(exc)) from exc
@@ -90,7 +93,7 @@ def _package_version() -> str:
         return "0.0.0"
 
 
-def create_server(client: LiseurClient, settings: Settings) -> MCPServer:
+def create_server(client: LiseurClient) -> MCPServer:
     mcp = MCPServer(
         "liseur",
         instructions=(

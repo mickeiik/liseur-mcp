@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 from typing import Any
 
 import httpx
@@ -146,7 +147,7 @@ def _real_app() -> BearerAuthMiddleware:
         "token",
         transport=httpx.MockTransport(lambda request: httpx.Response(500)),
     )
-    mcp = create_server(client, settings)
+    mcp = create_server(client)
     return BearerAuthMiddleware(create_http_app(mcp, settings), TOKEN, settings.mcp_path)
 
 
@@ -173,6 +174,11 @@ def test_real_server_wiring_rejects_unauthenticated_and_accepts_bearer() -> None
         )
         assert authenticated.status_code == 200
         assert authenticated.json()["result"]["serverInfo"]["name"] == "liseur"
+        # 2.x lets the server state its own version; it must state ours, not the SDK's.
+        assert (
+            authenticated.json()["result"]["serverInfo"]["version"]
+            == importlib.metadata.version("liseur-mcp")
+        )
 
 
 def _http_settings(**overrides: Any) -> Settings:
@@ -192,7 +198,7 @@ def _http_app(settings: Settings) -> BearerAuthMiddleware:
         "token",
         transport=httpx.MockTransport(lambda request: httpx.Response(500)),
     )
-    mcp = create_server(client, settings)
+    mcp = create_server(client)
     return BearerAuthMiddleware(create_http_app(mcp, settings), TOKEN, settings.mcp_path)
 
 

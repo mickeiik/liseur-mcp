@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import io
 import zipfile
 from collections.abc import Callable
@@ -10,11 +11,12 @@ import httpx
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 
 from liseur_mcp import server as server_module
 from liseur_mcp.client import LiseurClient
 from liseur_mcp.config import Settings
-from liseur_mcp.server import create_server
+from liseur_mcp.server import _surface_failure, create_server
 
 TOOL_NAMES = {
     "list_folders",
@@ -54,10 +56,6 @@ CHAPTER_0 = "One\n\nHello world.\n\nSecond & last."
 CHAPTER_1 = "Another chapter."
 
 
-def _settings() -> Settings:
-    return Settings(LISEUR_URL="http://liseur.test", LISEUR_TOKEN="token")
-
-
 def _epub() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -79,7 +77,7 @@ def _epub() -> bytes:
 
 def _server(handler: Handler) -> MCPServer:
     client = LiseurClient("http://liseur.test", "token", transport=httpx.MockTransport(handler))
-    return create_server(client, _settings())
+    return create_server(client)
 
 
 def _call(mcp: MCPServer, name: str, arguments: dict[str, Any]) -> Any:
@@ -93,9 +91,51 @@ def test_server_registers_the_read_only_tool_surface() -> None:
         "token",
         transport=httpx.MockTransport(lambda request: httpx.Response(500)),
     )
-    mcp = create_server(client, _settings())
+    mcp = create_server(client)
     tools = asyncio.run(mcp.list_tools())
     assert {tool.name for tool in tools} == TOOL_NAMES
+
+
+def test_surface_failure_keeps_messages_and_lets_protocol_errors_through() -> None:
+    @_surface_failure
+    async def raises_value() -> None:
+        raise ValueError("range must be \"all\" or \"<days>d\"")
+
+    @_surface_failure
+    async def raises_tool() -> None:
+        raise ToolError("tool-level")
+
+    @_surface_failure
+    async def raises_mcp() -> None:
+        raise MCPError(-32042, "protocol-level")
+
+    with pytest.raises(ToolError, match="range must be"):
+        asyncio.run(raises_value())
+    with pytest.raises(ToolError, match="tool-level"):
+        asyncio.run(raises_tool())
+    # MCPError answers the JSON-RPC layer; converting it to a tool error would
+    # answer the client with the wrong kind of failure.
+    with pytest.raises(MCPError, match="protocol-level"):
+        asyncio.run(raises_mcp())
+
+
+def test_upstream_failure_message_reaches_the_tool_error() -> None:
+    mcp = _server(lambda request: httpx.Response(500, text="upstream is unwell"))
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "list_folders", {})
+
+    assert "liseur-sync answered 500: upstream is unwell" in str(excinfo.value)
+
+
+def test_package_version_falls_back_when_metadata_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    assert server_module._package_version() == "0.0.0"
 
 
 def test_http_transport_requires_an_auth_token() -> None:
