@@ -9,8 +9,10 @@ name: conformance
 # passes while evil origins are still refused.
 # Protocol-level scenarios never invoke our real tools, so the server runs
 # with dummy upstream credentials (no liseur-sync instance needed).
+# Tag pushes are excluded: the commit already ran this on main.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

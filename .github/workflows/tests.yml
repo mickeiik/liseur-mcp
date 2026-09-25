@@ -1,9 +1,11 @@
 name: tests
 
 # Unit tests, lint and type check. The conformance and smoke workflows cover
-# the end-to-end paths; this one keeps the suite itself enforced.
+# the end-to-end paths; this one keeps the suite itself enforced. Tag pushes
+# are excluded: the release workflow re-verifies the tagged commit.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

@@ -3,9 +3,11 @@ name: smoke
 # End-to-end smoke tests against the shipped binary via the official MCP
 # Inspector CLI (see scripts/smoke.sh): real startup, both transports, tool
 # surface, schema portability. No liseur-sync instance needed -- tools/call
-# probes use invalid arguments, refused before any upstream request.
+# probes use invalid arguments, refused before any upstream request. Tag
+# pushes are excluded: the commit already ran this on main.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
