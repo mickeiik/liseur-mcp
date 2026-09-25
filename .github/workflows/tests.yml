@@ -13,6 +13,12 @@ jobs:
   pytest-ruff-pyright:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what ruff and pyright are configured against; the newest
+        # is what the Dockerfile runs. Both ends of the window get the suite.
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -22,7 +28,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --frozen

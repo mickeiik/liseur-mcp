@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Read-only MCP server for a liseur-sync library: catalog, reading stats, highlights and EPUB text"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12,<3.15"
 dependencies = [
   "httpx>=0.28,<1",
   "mcp==2.2.0",
