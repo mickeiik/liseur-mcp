@@ -1,0 +1,72 @@
+name: docker
+
+# Builds the image and speaks MCP to the running container. The other gates
+# never touch the Dockerfile, so a base-image bump can build cleanly and still
+# crash at startup (uv-managed interpreters under a non-root user, for
+# instance); this is the only job that would notice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build -t liseur-mcp:ci .
+
+      - name: Start the container and speak MCP to it
+        run: |
+          set -euo pipefail
+          docker run -d --name liseur-mcp-ci -p 18000:8000 \
+            -e LISEUR_URL=http://127.0.0.1:9 -e LISEUR_TOKEN=ci-dummy \
+            -e MCP_TRANSPORT=streamable-http -e MCP_HOST=0.0.0.0 \
+            -e MCP_AUTH_TOKEN=docker-gate-token liseur-mcp:ci
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null -X POST http://127.0.0.1:18000/mcp \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -H 'Authorization: Bearer docker-gate-token' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" != 1 ]; then
+            echo "::error::the container never answered ping; its log follows"
+            docker logs liseur-mcp-ci || true
+            exit 1
+          fi
+
+          if ! curl -sf -X POST http://127.0.0.1:18000/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H 'Authorization: Bearer docker-gate-token' \
+            -d '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"docker-gate","version":"0"}}}' \
+            | grep -q '"serverInfo"'; then
+            echo "::error::the container answered ping but not initialize; its log follows"
+            docker logs liseur-mcp-ci || true
+            exit 1
+          fi
+          echo "container answered ping and initialize"
+
+      - name: Show the container log
+        if: failure()
+        run: docker logs liseur-mcp-ci 2>&1 || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f liseur-mcp-ci 2>/dev/null || true
