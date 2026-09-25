@@ -42,7 +42,7 @@ jobs:
           MCP_TRANSPORT=streamable-http MCP_HOST=127.0.0.1 MCP_PORT="$SERVER_PORT" \
           MCP_AUTH_TOKEN="$CONFORMANCE_AUTH_TOKEN" \
           MCP_ALLOWED_ORIGINS="http://127.0.0.1:$PROXY_PORT" \
-          uv run liseur-mcp > server.log 2>&1 &
+          .venv/bin/liseur-mcp > server.log 2>&1 &
           python3 scripts/conformance-proxy.py --upstream "http://127.0.0.1:$SERVER_PORT" \
             --listen-port "$PROXY_PORT" --token "$CONFORMANCE_AUTH_TOKEN" > proxy.log 2>&1 &
           for i in $(seq 1 60); do
@@ -74,3 +74,10 @@ jobs:
         run: |
           echo '--- server.log ---'; cat server.log
           echo '--- proxy.log ---'; cat proxy.log
+
+      # The background server and proxy must not outlive the job: a lingering
+      # `uv run` held the uv cache lock and made setup-uv's post-job prune hang
+      # for 5 minutes and exit 2, turning a green run red.
+      - name: Stop background processes
+        if: always()
+        run: pkill -f 'liseur-mcp|conformance-proxy.py' || true

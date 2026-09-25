@@ -15,7 +15,7 @@ LISEUR_URL="${LISEUR_URL:-http://127.0.0.1:9}" LISEUR_TOKEN="${LISEUR_TOKEN:-loc
 MCP_TRANSPORT=streamable-http MCP_HOST=127.0.0.1 MCP_PORT="$SERVER_PORT" \
 MCP_AUTH_TOKEN="$TOKEN" \
 MCP_ALLOWED_ORIGINS="http://127.0.0.1:$PROXY_PORT" \
-uv run liseur-mcp > /tmp/liseur-conformance-server.log 2>&1 &
+.venv/bin/liseur-mcp > /tmp/liseur-conformance-server.log 2>&1 &
 SERVER_PID=$!
 python3 scripts/conformance-proxy.py --upstream "http://127.0.0.1:$SERVER_PORT" \
   --listen-port "$PROXY_PORT" --token "$TOKEN" > /tmp/liseur-conformance-proxy.log 2>&1 &
