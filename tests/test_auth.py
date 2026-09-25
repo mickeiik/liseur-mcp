@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 from liseur_mcp.auth import BearerAuthMiddleware
 from liseur_mcp.client import LiseurClient
 from liseur_mcp.config import Settings
-from liseur_mcp.server import create_server
+from liseur_mcp.server import create_http_app, create_server
 
 TOKEN = "s3cret-token"
 INITIALIZE = {
@@ -147,7 +147,7 @@ def _real_app() -> BearerAuthMiddleware:
         transport=httpx.MockTransport(lambda request: httpx.Response(500)),
     )
     mcp = create_server(client, settings)
-    return BearerAuthMiddleware(mcp.streamable_http_app(), TOKEN, settings.mcp_path)
+    return BearerAuthMiddleware(create_http_app(mcp, settings), TOKEN, settings.mcp_path)
 
 
 def test_empty_token_is_refused_at_construction() -> None:
@@ -193,7 +193,7 @@ def _http_app(settings: Settings) -> BearerAuthMiddleware:
         transport=httpx.MockTransport(lambda request: httpx.Response(500)),
     )
     mcp = create_server(client, settings)
-    return BearerAuthMiddleware(mcp.streamable_http_app(), TOKEN, settings.mcp_path)
+    return BearerAuthMiddleware(create_http_app(mcp, settings), TOKEN, settings.mcp_path)
 
 
 def test_origin_is_refused_by_default_and_accepted_when_allowed() -> None:

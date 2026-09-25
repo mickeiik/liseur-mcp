@@ -11,9 +11,9 @@ license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "httpx>=0.28,<1",
-  "mcp==1.28.1",
+  "mcp==2.2.0",
   "pydantic-settings>=2.7,<3",
-  "starlette>=0.46,<1",
+  "starlette>=0.46,<2",
   "uvicorn[standard]>=0.34,<1",
 ]
 
@@ -27,8 +27,8 @@ Issues = "https://github.com/mickeiik/liseur-mcp/issues"
 [dependency-groups]
 dev = [
   "pyright>=1.1.400,<2",
-  "pytest>=8.3,<9",
-  "pytest-cov>=6,<7",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
   "ruff>=0.11,<1",
 ]
 

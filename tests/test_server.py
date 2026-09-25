@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from liseur_mcp import server as server_module
 from liseur_mcp.client import LiseurClient
@@ -77,14 +77,14 @@ def _epub() -> bytes:
     return buffer.getvalue()
 
 
-def _server(handler: Handler) -> FastMCP:
+def _server(handler: Handler) -> MCPServer:
     client = LiseurClient("http://liseur.test", "token", transport=httpx.MockTransport(handler))
     return create_server(client, _settings())
 
 
-def _call(mcp: FastMCP, name: str, arguments: dict[str, Any]) -> Any:
-    _, structured = asyncio.run(mcp.call_tool(name, arguments))
-    return structured
+def _call(mcp: MCPServer, name: str, arguments: dict[str, Any]) -> Any:
+    result = asyncio.run(mcp.call_tool(name, arguments))
+    return result.structured_content
 
 
 def test_server_registers_the_read_only_tool_surface() -> None:

@@ -1,13 +1,39 @@
 from __future__ import annotations
 
+import functools
+import importlib.metadata
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
 
 from .client import LiseurClient
 from .config import Settings
 from .epub import parse_epub
+
+
+def _surface_failure(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    """Keep a handler failure's message on the wire.
+
+    SDK 2.x treats any exception other than ToolError as a crash and reports it
+    as a bare "Error executing tool <name>", hiding the text that 1.x surfaced.
+    Re-raising as ToolError restores the old contract for the anticipated
+    ValueErrors below and for upstream LiseurError/httpx failures alike.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(str(exc)) from exc
+
+    return wrapper
 
 DEFAULT_TEXT_CHARS = 20_000
 MAX_TEXT_CHARS = 100_000
@@ -57,25 +83,26 @@ def _annotation_view(annotation: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
-    mcp = FastMCP(
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("liseur-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return "0.0.0"
+
+
+def create_server(client: LiseurClient, settings: Settings) -> MCPServer:
+    mcp = MCPServer(
         "liseur",
         instructions=(
             "Read-only access to a liseur-sync library: catalog browsing, reading "
             "statistics, highlights and EPUB chapter text. Start with list_folders "
             "or search_books; get_book_text reads a book one chapter at a time."
         ),
-        streamable_http_path=settings.mcp_path,
-        json_response=True,
-        stateless_http=True,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=settings.allowed_hosts,
-            allowed_origins=settings.allowed_origins,
-        ),
+        version=_package_version(),
     )
 
     @mcp.tool()
+    @_surface_failure
     async def list_folders() -> list[dict[str, Any]]:
         """List the library folders this account can read.
 
@@ -87,6 +114,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         ]
 
     @mcp.tool()
+    @_surface_failure
     async def list_books(folder_id: str, order: str = "recent", limit: int = 50) -> dict[str, Any]:
         """List books in one folder.
 
@@ -98,6 +126,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         return {"count": len(books), "books": books}
 
     @mcp.tool()
+    @_surface_failure
     async def search_books(
         query: str, folder_id: str | None = None, limit: int = 20
     ) -> dict[str, Any]:
@@ -121,11 +150,13 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         return {"count": len(books), "truncated": truncated or len(merged) > limit, "books": books}
 
     @mcp.tool()
+    @_surface_failure
     async def get_book(book_id: str) -> dict[str, Any]:
         """Fetch one catalog record by book_id (same shape list_books returns)."""
         return await client.book(book_id)
 
     @mcp.tool()
+    @_surface_failure
     async def reading_stats(range: str = "30d") -> dict[str, Any]:  # noqa: A002
         """Reading totals, streak and pace over a span, plus per-work rows.
 
@@ -146,6 +177,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         }
 
     @mcp.tool()
+    @_surface_failure
     async def list_highlights(
         book_id: str | None = None, limit: int = 100, offset: int = 0
     ) -> dict[str, Any]:
@@ -214,6 +246,7 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         return result
 
     @mcp.tool()
+    @_surface_failure
     async def get_book_text(
         book_id: str,
         chapter: int | None = None,
@@ -266,3 +299,16 @@ def create_server(client: LiseurClient, settings: Settings) -> FastMCP:
         return result
 
     return mcp
+
+
+def create_http_app(mcp: MCPServer, settings: Settings) -> Starlette:
+    return mcp.streamable_http_app(
+        streamable_http_path=settings.mcp_path,
+        json_response=True,
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=settings.allowed_hosts,
+            allowed_origins=settings.allowed_origins,
+        ),
+    )

@@ -7,7 +7,7 @@ import uvicorn
 from liseur_mcp.auth import BearerAuthMiddleware
 from liseur_mcp.client import LiseurClient
 from liseur_mcp.config import Settings
-from liseur_mcp.server import create_server
+from liseur_mcp.server import create_http_app, create_server
 
 
 def main() -> None:
@@ -26,7 +26,7 @@ def main() -> None:
         mcp.run(transport="stdio")
         return
     app = BearerAuthMiddleware(
-        mcp.streamable_http_app(),
+        create_http_app(mcp, settings),
         settings.auth_token.get_secret_value(),
         settings.mcp_path,
     )
