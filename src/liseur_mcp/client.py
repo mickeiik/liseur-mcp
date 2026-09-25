@@ -118,6 +118,10 @@ class LiseurClient:
                 return json.loads(data)
             return data
 
+    async def token_info(self) -> dict[str, Any]:
+        """GET /v1/token: the identity and scopes of the configured token."""
+        return await self._request("GET", "/v1/token")
+
     async def folders(self) -> list[dict[str, Any]]:
         folders: list[dict[str, Any]] = []
         after: str | None = None

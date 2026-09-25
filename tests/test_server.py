@@ -385,6 +385,44 @@ def test_list_books_forwards_order_and_limit() -> None:
     assert seen == [{"order": "oldest", "limit": "7"}]
 
 
+def test_list_books_refuses_bad_limit_and_order_without_a_request() -> None:
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"books": []})
+
+    mcp = _server(handler)
+
+    for limit in (0, 201):
+        with pytest.raises(ToolError) as excinfo:
+            _call(mcp, "list_books", {"folder_id": "f1", "limit": limit})
+        assert "limit must be between 1 and 200" in str(excinfo.value)
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(mcp, "list_books", {"folder_id": "f1", "order": "newest"})
+    assert 'order must be "recent" or "oldest"' in str(excinfo.value)
+
+    assert seen == []
+
+
+def test_search_books_refuses_bad_limit_without_a_request() -> None:
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"folders": []})
+
+    mcp = _server(handler)
+
+    for limit in (0, 101):
+        with pytest.raises(ToolError) as excinfo:
+            _call(mcp, "search_books", {"query": "dune", "limit": limit})
+        assert "limit must be between 1 and 100" in str(excinfo.value)
+
+    assert seen == []
+
+
 def test_search_books_forwards_query_and_merges_two_folders() -> None:
     searches: list[dict[str, str]] = []
 

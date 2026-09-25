@@ -65,6 +65,20 @@ def test_folders_follow_cursor_pagination() -> None:
     assert [folder["folder_id"] for folder in folders] == ["f1", "f2"]
 
 
+def test_token_info_gets_v1_token_with_the_bearer_header() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"account_id": "acc-1", "scopes": ["sync"]})
+
+    info = asyncio.run(_client(httpx.MockTransport(handler)).token_info())
+    assert info == {"account_id": "acc-1", "scopes": ["sync"]}
+    assert seen[0].method == "GET"
+    assert seen[0].url.path == "/v1/token"
+    assert seen[0].headers["authorization"] == "Bearer token"
+
+
 def test_annotation_changes_follows_the_documented_cursor() -> None:
     live = [{"id": f"a{i:04d}", "kind": "highlight", "rev": 1, "seq": i + 1} for i in range(600)]
     rows = [*live, {"id": "tomb", "rev": 1, "seq": 601, "deleted": True}]

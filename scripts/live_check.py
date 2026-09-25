@@ -62,6 +62,28 @@ def token_from_environment() -> str | None:
 
 
 async def run_checks(client: LiseurClient) -> None:
+    token = await client.token_info()
+    if check(isinstance(token, dict), "GET /v1/token is an object", type(token).__name__):
+        absent = missing_keys(
+            [token], {"id", "account_id", "device_id", "name", "scopes", "session_active_ms"}
+        )
+        check(
+            not absent,
+            "token carries id/account_id/device_id/name/scopes/session_active_ms",
+            f"missing {absent}",
+        )
+        check(
+            isinstance(token.get("account_id"), str),
+            "token account_id is a string",
+            type(token.get("account_id")).__name__,
+        )
+        scopes = token.get("scopes")
+        check(
+            isinstance(scopes, list) and all(isinstance(scope, str) for scope in scopes),
+            "token scopes is a list of strings",
+            type(scopes).__name__,
+        )
+
     folders = await client.folders()
     if not check(list_of_dicts(folders), "GET /v1/folders is a list of objects"):
         return

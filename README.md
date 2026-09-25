@@ -138,6 +138,16 @@ docker run -d --name liseur-mcp --restart unless-stopped \
   not from here: it refuses plain HTTP unless it is configured to allow it.
   Point `LISEUR_URL` at the HTTPS name.
 
+At startup the server calls `GET /v1/token` once to learn the account and the
+token's scopes. A refused credential (401/403) ends the process with the
+upstream reason on stderr: a 401 means the device token is absent, revoked or
+expired, so mint a new one and update `LISEUR_TOKEN`/`LISEUR_TOKEN_FILE`; a 403
+such as `https required` means `LISEUR_URL` is not the HTTPS name. If a scope a
+tool needs is missing it logs a warning naming the scope and the tools that
+will fail, and starts anyway. If the instance is unreachable, or answers
+anything else — a 5xx, a malformed body — it logs a warning and starts too, so
+the tools report the real reason rather than the server refusing to boot.
+
 ## Develop
 
 ```sh

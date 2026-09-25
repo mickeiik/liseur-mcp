@@ -41,6 +41,8 @@ def _surface_failure(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitab
 DEFAULT_TEXT_CHARS = 20_000
 MAX_TEXT_CHARS = 100_000
 MAX_STATS_WORKS = 50
+MAX_BOOKS = 200
+MAX_SEARCH_RESULTS = 100
 MAX_HIGHLIGHTS = 500
 MAX_HIGHLIGHT_BODY = 2_000
 MAX_RANGE_DAYS = 3_660
@@ -125,6 +127,10 @@ def create_server(client: LiseurClient) -> MCPServer:
         value outside that range is refused, not clamped. Returns full catalog
         records: book_id, title, contributors, series, tags.
         """
+        if not 1 <= limit <= MAX_BOOKS:
+            raise ValueError(f"limit must be between 1 and {MAX_BOOKS}")
+        if order not in ("recent", "oldest"):
+            raise ValueError('order must be "recent" or "oldest"')
         books = await client.books(folder_id, order=order, limit=limit)
         return {"count": len(books), "books": books}
 
@@ -141,6 +147,8 @@ def create_server(client: LiseurClient) -> MCPServer:
         contribute nothing (truncated says the answer was cut). limit: 1-100
         (default 20); a value outside that range is refused, not clamped.
         """
+        if not 1 <= limit <= MAX_SEARCH_RESULTS:
+            raise ValueError(f"limit must be between 1 and {MAX_SEARCH_RESULTS}")
         folders = [{"folder_id": folder_id}] if folder_id else await client.folders()
         merged: dict[str, dict[str, Any]] = {}
         truncated = False
