@@ -29,6 +29,17 @@ Mint a dedicated device token with exactly:
 - `read-insights` — reading statistics
 - `sync` — highlights and notes; the book→work join needs this and `library-read`
 
+## Install
+
+To run a release without a checkout:
+
+```sh
+uv tool install git+https://github.com/mickeiik/liseur-mcp@v0.1.0
+liseur-mcp   # stdio; configure with the environment below
+```
+
+The rest of this file runs `uv run liseur-mcp` from a checkout.
+
 ## Run (stdio, for clients on this machine)
 
 ```sh
@@ -168,3 +179,22 @@ uv sync
 ```
 
 The Inspector is pinned in the script (`INSPECTOR_VERSION`, default `2.8.0`).
+
+## Releasing
+
+The version lives in `pyproject.toml`, and the tag must match it.
+`.github/workflows/release.yml` runs on tag push: it refuses a tag that
+disagrees with `pyproject.toml`, re-runs pytest/ruff/pyright on the tagged
+commit, then publishes a release whose notes are built from the commits since
+the previous tag.
+
+```sh
+# 1. bump version in pyproject.toml, land it on main, CI green
+# 2. tag and push — the workflow does the rest
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin v0.1.1
+```
+
+Bump rule: `feat` → minor, everything else → patch. Moving the `mcp==` pin, or
+any deliberate behaviour break, is a minor bump, and its release notes should
+name the MCP spec version the release negotiates.

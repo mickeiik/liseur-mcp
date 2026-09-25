@@ -20,6 +20,10 @@ dependencies = [
 [project.scripts]
 liseur-mcp = "liseur_mcp.__main__:main"
 
+[project.urls]
+Repository = "https://github.com/mickeiik/liseur-mcp"
+Issues = "https://github.com/mickeiik/liseur-mcp/issues"
+
 [dependency-groups]
 dev = [
   "pyright>=1.1.400,<2",
