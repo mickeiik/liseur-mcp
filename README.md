@@ -209,19 +209,22 @@ shape shows up here before it shows up as a broken tool.
 
 ## Releasing
 
-The version lives in `pyproject.toml`, and the tag must match it.
-`.github/workflows/release.yml` runs on tag push: it refuses a tag that
-disagrees with `pyproject.toml`, re-runs pytest/ruff/pyright on the tagged
-commit, then publishes a release whose notes are built from the commits since
-the previous tag.
+Release when a consumer's install or behaviour changes: anything under `src/`,
+the dependencies or metadata in `pyproject.toml`, or the `Dockerfile`. CI,
+docs, tests and `scripts/` changes get no release of their own — they ride into
+the next one.
 
 ```sh
-# 1. bump version in pyproject.toml, land it on main, CI green
+# 1. bump version in pyproject.toml and run uv lock, land it on main, CI green
 # 2. tag and push — the workflow does the rest
-git tag -a v0.1.1 -m "v0.1.1"
-git push origin v0.1.1
+git tag -a v0.3.1 -m "v0.3.1"
+git push origin v0.3.1
 ```
 
-Bump rule: `feat` → minor, everything else → patch. Moving the `mcp==` pin, or
-any deliberate behaviour break, is a minor bump, and its release notes should
-name the MCP spec version the release negotiates.
+`.github/workflows/release.yml` refuses a tag that disagrees with
+`pyproject.toml`, re-runs the checks on the tagged commit, then publishes notes
+built from the commits since the previous tag.
+
+Bump levels: `feat` → minor, `fix` → patch, a breaking change or a move of the
+`mcp` pin → minor while the version is 0.x. The same rules, aimed at agents, are
+in `AGENTS.md`.
