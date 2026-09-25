@@ -62,3 +62,7 @@ that is where the claim has to live.
   here; the `upstream-spec` workflow files an `upstream-drift` issue when
   upstream moves. Refresh the hash and date only after re-reading the changed
   endpoints against `src/liseur_mcp/client.py`.
+- **The Inspector pin is watched, not forgotten.** `scripts/smoke.sh`'s
+  `INSPECTOR_VERSION` is compared weekly against npm's `latest`; a lag files an
+  `upstream-drift` issue (a warning, never a red run). Bump it there and in the
+  README line that names it.
