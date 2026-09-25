@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "liseur-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read-only MCP server for a liseur-sync library: catalog, reading stats, highlights and EPUB text"
 readme = "README.md"
 license = "MIT"
