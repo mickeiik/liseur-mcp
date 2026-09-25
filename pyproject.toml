@@ -32,7 +32,7 @@ dev = [
 packages = ["src/liseur_mcp"]
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-markers --cov=liseur_mcp --cov-report=term-missing"
+addopts = "-q --strict-markers --cov=liseur_mcp --cov-report=term-missing --cov-fail-under=90"
 testpaths = ["tests"]
 
 [tool.ruff]

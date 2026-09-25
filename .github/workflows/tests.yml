@@ -1,0 +1,35 @@
+name: tests
+
+# Unit tests, lint and type check. The conformance and smoke workflows cover
+# the end-to-end paths; this one keeps the suite itself enforced.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest-ruff-pyright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing uses git after checkout; do not leave GITHUB_TOKEN in the
+          # runner's git config.
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: pytest
+        run: uv run pytest
+
+      - name: ruff
+        run: uv run ruff check
+
+      - name: pyright
+        run: uv run pyright
