@@ -4,8 +4,8 @@
 #
 # When that issue arrives: re-read the changed endpoints against
 # src/liseur_mcp/client.py, run the read-only checks against the real instance
-# (./scripts/smoke.sh needs LISEUR_URL reachable, so it is a LAN-side step),
-# then replace the hash below and close the issue.
+# (scripts/live_check.py needs LISEUR_URL reachable), then replace the hash
+# below and close the issue.
 #
 # last reviewed: 2026-09-25 (upstream f146e36)
 38903c577aaadad8cc971d8fd8d90e8bfe70dff54ae8abbc530cc51de0eea76f

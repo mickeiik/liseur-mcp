@@ -4,9 +4,9 @@
 Read-only: it calls the same read paths the tools do and asserts the shapes
 those tools depend on -- not their values, which are expected to change. A
 renamed or dropped field here is exactly what would surface as a broken tool
-later, so this is the check to run before a release and to schedule from a host
-that can reach the instance (it is deliberately not in CI: it needs a reachable
-instance and a token).
+later, so run it before a release, and schedule it wherever the instance is
+reachable. The workflows in this repository do not run it: they target local
+stubs and dummy credentials.
 
     LISEUR_URL=https://books.example.com LISEUR_TOKEN=... \
         uv run python scripts/live_check.py
