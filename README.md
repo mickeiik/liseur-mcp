@@ -135,3 +135,20 @@ uv run pytest
 uv run ruff check
 uv run pyright
 ```
+
+## Conformance
+
+The MCP spec conformance gate runs the official
+[`modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance)
+suite (`server`, `active`) in CI (`.github/workflows/conformance.yml`, pinned
+to `v0.1.16`). The harness sends no auth header, so runs put a small
+auth-injecting proxy (`scripts/conformance-proxy.py`) in front of the server.
+Known-by-design failures (this tools-only server exposes no resources,
+prompts, completions, elicitation or sampling) are baselined in
+`conformance-baseline.yml`. No liseur-sync instance is needed: the
+protocol-level scenarios never invoke the real tools.
+
+```sh
+./scripts/conformance-local.sh
+# or a single scenario: ./scripts/conformance-local.sh --scenario tools-list
+```

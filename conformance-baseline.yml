@@ -1,0 +1,40 @@
+# Baseline of known-by-design conformance failures for liseur-mcp.
+# Format is pinned by modelcontextprotocol/conformance v0.1.16: whole scenario
+# names only (no per-check entries), and a WARNING counts as a failure.
+# Verified against `server --suite active` with dummy upstream credentials:
+# protocol-level scenarios never invoke our real tools, so no liseur-sync
+# instance is needed. tools-call-simple-text / tools-call-error pass
+# vacuously (unknown test tool -> well-formed isError result); resources-list
+# and prompts-list pass as empty lists.
+server:
+  # No logging capability (FastMCP default has no logging/setLevel).
+  - logging-set-level
+  # No completion/complete endpoint (no prompts with args, no resource templates).
+  - completion-complete
+  # Tools-only server returning text content; no image/audio/embedded/mixed payloads.
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  # Tools emit no logging notifications or progress updates.
+  - tools-call-with-logging
+  - tools-call-with-progress
+  # No sampling or elicitation support.
+  - tools-call-sampling
+  - tools-call-elicitation
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+  # No resources exposed (resources-list passes as an empty list).
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  - resources-subscribe
+  - resources-unsubscribe
+  # No prompts exposed (prompts-list passes as an empty list).
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+  # Stateless server (stateless_http=True): no session ID for stream tests.
+  # Emits a WARNING, which v0.1.16 still treats as a baseline failure.
+  - server-sse-multiple-streams

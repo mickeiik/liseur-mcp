@@ -1,0 +1,72 @@
+name: conformance
+
+# Official MCP spec conformance gate (server side, active suite).
+# The harness sends no Authorization header while our streamable-http
+# transport requires bearer auth, so a small auth-injecting proxy sits in
+# front of the server. Host is forwarded untouched so the
+# dns-rebinding-protection scenario still exercises Host validation, and
+# MCP_ALLOWED_ORIGINS admits the proxy origin so the valid-origin check
+# passes while evil origins are still refused.
+# Protocol-level scenarios never invoke our real tools, so the server runs
+# with dummy upstream credentials (no liseur-sync instance needed).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mcp-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER_PORT: "8000"
+      PROXY_PORT: "8010"
+      CONFORMANCE_AUTH_TOKEN: conformance-ci-token
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Start server and auth proxy
+        run: |
+          LISEUR_URL=http://127.0.0.1:9 LISEUR_TOKEN=ci-dummy \
+          MCP_TRANSPORT=streamable-http MCP_HOST=127.0.0.1 MCP_PORT="$SERVER_PORT" \
+          MCP_AUTH_TOKEN="$CONFORMANCE_AUTH_TOKEN" \
+          MCP_ALLOWED_ORIGINS="http://127.0.0.1:$PROXY_PORT" \
+          uv run liseur-mcp > server.log 2>&1 &
+          python3 scripts/conformance-proxy.py --upstream "http://127.0.0.1:$SERVER_PORT" \
+            --listen-port "$PROXY_PORT" --token "$CONFORMANCE_AUTH_TOKEN" > proxy.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null -X POST "http://127.0.0.1:$PROXY_PORT/mcp" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","id":0,"method":"ping"}'; then
+              echo "proxy ready"
+              break
+            fi
+            sleep 1
+            if [ "$i" = 60 ]; then
+              echo '--- server.log ---'; cat server.log
+              echo '--- proxy.log ---'; cat proxy.log
+              exit 1
+            fi
+          done
+
+      - name: Run MCP conformance (server, active suite)
+        uses: modelcontextprotocol/conformance@v0.1.16
+        with:
+          mode: server
+          url: http://127.0.0.1:8010/mcp
+          suite: active
+          expected-failures: ./conformance-baseline.yml
+
+      - name: Show server logs on failure
+        if: failure()
+        run: |
+          echo '--- server.log ---'; cat server.log
+          echo '--- proxy.log ---'; cat proxy.log
