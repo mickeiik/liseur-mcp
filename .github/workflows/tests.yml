@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Lockfile matches pyproject
+        run: uv lock --check
+
       - name: pytest
         run: uv run pytest
 

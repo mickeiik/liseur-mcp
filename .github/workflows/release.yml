@@ -42,6 +42,7 @@ jobs:
 
       - name: Verify the tagged commit
         run: |
+          uv lock --check
           uv run pytest
           uv run ruff check
           uv run pyright
