@@ -190,8 +190,21 @@ weekly it hashes upstream's `docs/openapi.yaml` — upstream publishes no tags o
 releases, so the spec is the anchor — and compares it with the sha256 recorded
 in `docs/upstream-openapi.sha`. On a change it files an `upstream-drift` issue
 and fails the run; the fix is to re-read the changed endpoints against
-`src/liseur_mcp/client.py`, check the tools against the real instance (a
-LAN-side step CI cannot do), then update the hash and close the issue.
+`src/liseur_mcp/client.py`, run the live check below (a LAN-side step CI cannot
+do), then update the hash and close the issue.
+
+For that LAN-side step, `scripts/live_check.py` shape-checks a real instance
+through the same client the tools use: read-only, it asserts the fields the
+seven tools read and exits non-zero naming what drifted. Run it before a
+release, or schedule it from a host that can reach the instance.
+
+```sh
+LISEUR_URL=https://books.example.com LISEUR_TOKEN=... \
+  uv run python scripts/live_check.py
+```
+
+It is deliberately not in CI — it needs a reachable instance and a token. A
+drifted shape shows up here before it shows up as a broken tool.
 
 ## Releasing
 

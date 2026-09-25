@@ -56,7 +56,7 @@ jobs:
             "" \
             "What to do here:" \
             "1. Read the changed endpoints and schemas against \`src/liseur_mcp/client.py\` and the tool tests." \
-            "2. Run the tools against the real instance from the LAN (the one check CI cannot reach)." \
+            "2. Run \`uv run python scripts/live_check.py\` from a host that can reach the instance (the one check CI cannot do)." \
             "3. Update the hash and date in \`docs/upstream-openapi.sha\`, then close this issue.")
 
           existing=$(gh issue list --state open --label upstream-drift \
