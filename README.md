@@ -188,7 +188,7 @@ uv sync
 ./scripts/smoke.sh
 ```
 
-The Inspector is pinned in the script (`INSPECTOR_VERSION`, default `2.8.0`);
+The Inspector is pinned in the script (`INSPECTOR_VERSION`, default `2.9.0`);
 the weekly watcher files an `upstream-drift` issue when npm's `latest` moves
 past it, since Dependabot cannot see a shell variable.
 

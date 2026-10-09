@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-INSPECTOR_VERSION="${INSPECTOR_VERSION:-2.8.0}"
+INSPECTOR_VERSION="${INSPECTOR_VERSION:-2.9.0}"
 HTTP_PORT="${HTTP_PORT:-8000}"
 TOKEN="smoke-local-token"
 INSPECTOR=(npx --yes "@modelcontextprotocol/inspector@${INSPECTOR_VERSION}" --cli)
