@@ -303,6 +303,116 @@ def test_reading_stats_accepts_range_all() -> None:
     ]
 
 
+def test_reading_stats_preserves_optional_dates_and_unknown_fields() -> None:
+    summary = {
+        "total_active_minutes": 1.5,
+        "total_pages": 0.5,
+        "sessions": 1,
+        "streak_days": 1,
+        "speed_prog_per_hour": 0.25,
+        "future_summary": {"enabled": True},
+    }
+    works = [
+        {
+            "work_id": "w1",
+            "sessions": 1,
+            "total_active_minutes": 1.5,
+            "total_pages": 0.5,
+            "current_progression": 0.25,
+            "eta_seconds": None,
+            "last_read_at": None,
+            "first_read_day": "2024-02-29",
+            "future_work": {"values": [1, 2]},
+        }
+    ]
+    seen: list[tuple[str, str, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/v1/insights/summary":
+            return httpx.Response(200, json=summary)
+        assert request.url.path == "/v1/insights/works"
+        return httpx.Response(200, json={"works": works})
+
+    result = _call(_server(handler), "reading_stats", {"range": "7d"})
+
+    assert result == {"summary": summary, "works": works, "works_total": 1}
+    assert seen == [
+        ("GET", "/v1/insights/summary", {"range": "7d"}),
+        ("GET", "/v1/insights/works", {"range": "7d"}),
+    ]
+
+
+@pytest.mark.parametrize("has_work", [False, True])
+def test_reading_stats_preserves_legacy_payloads_without_optional_dates(
+    has_work: bool,
+) -> None:
+    summary = {
+        "total_active_minutes": 0,
+        "total_pages": 0,
+        "sessions": 0,
+        "streak_days": 0,
+        "speed_prog_per_hour": 0,
+    }
+    works = [
+        {
+            "work_id": "w1",
+            "sessions": 1,
+            "total_active_minutes": 1.5,
+            "total_pages": 0.5,
+            "current_progression": 0.25,
+            "eta_seconds": None,
+            "last_read_at": None,
+        }
+    ] if has_work else []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/insights/summary":
+            return httpx.Response(200, json=summary)
+        assert request.url.path == "/v1/insights/works"
+        return httpx.Response(200, json={"works": works})
+
+    result = _call(_server(handler), "reading_stats", {})
+
+    assert result == {"summary": summary, "works": works, "works_total": len(works)}
+    assert all("first_read_day" not in work for work in result["works"])
+
+
+def test_reading_stats_preserves_short_rows_in_upstream_order_before_capping() -> None:
+    # Ties and nonmonotonic values catch an unintended local re-sort.
+    works = [
+        {"work_id": f"w{60 - index:02}", "total_active_minutes": (0.4, 1.7, 0.9, 1.7)[index % 4]}
+        for index in range(60)
+    ]
+    assert all(0 < work["total_active_minutes"] < 2 for work in works)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/insights/summary":
+            return httpx.Response(200, json={"sessions": 60})
+        assert request.url.path == "/v1/insights/works"
+        return httpx.Response(200, json={"works": works})
+
+    result = _call(_server(handler), "reading_stats", {})
+
+    assert result["works"] == works[:50]
+    assert len(result["works"]) == 50
+    assert result["works_total"] == 60
+
+
+def test_reading_stats_advertises_upstream_sitting_semantics() -> None:
+    mcp = _server(lambda request: httpx.Response(500))
+    tool = next(tool for tool in asyncio.run(mcp.list_tools()) if tool.name == "reading_stats")
+
+    assert tool.description is not None
+    description = tool.description.lower()
+    assert "sittings" in description
+    assert "less than five minutes" in description
+    assert "account-local day" in description
+    assert "compacted" in description
+    assert "first_read_day" in description
+    assert "older servers" in description
+
+
 def test_list_highlights_next_offset_respects_the_cap() -> None:
     # next_offset must be the page's real end (the 500 cap), not start + limit:
     # a cap-unaware value would silently skip everything between them.

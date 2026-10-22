@@ -21,6 +21,20 @@ the same mapping every reading client makes.
 | `list_highlights` | highlights/notes/bookmarks, for one book or the account |
 | `get_book_text` | table of contents and chapter text (EPUB parsed locally) |
 
+`reading_stats` passes summary values and per-work fields through unchanged,
+including unknown fields and optional `first_read_day` dates. That date is the
+account-local day the work was first read over all history, independent of the
+requested span; older servers omit it. Rows retain the upstream time-read
+order, including works with less than two minutes read, and are capped at 50;
+`works_total` counts the full list before the cap.
+
+The `sessions` statistic counts upstream **sittings**, not raw session events.
+For retained history, sessions of the same work on one account-local day are
+grouped across devices while each starts less than five minutes after the
+preceding ones ended. Compacted history counts one sitting per stored session:
+its raw timings are no longer available, so this server cannot reconstruct or
+regroup those sittings.
+
 ## Scopes
 
 Mint a dedicated device token with exactly:

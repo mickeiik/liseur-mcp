@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,15 @@ def check(ok: bool, description: str, detail: Any = "") -> bool:
 
 def list_of_dicts(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+
+
+def is_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
 
 
 def missing_keys(records: list[dict[str, Any]], keys: set[str]) -> list[str]:
@@ -108,19 +118,42 @@ async def run_checks(client: LiseurClient) -> None:
         await check_book(client, books[0], folder_id)
 
     summary = await client.insights_summary("30d")
-    check(
+    if check(
         isinstance(summary, dict),
         "GET /v1/insights/summary is an object",
         type(summary).__name__,
-    )
+    ):
+        for field in ("total_active_minutes", "total_pages", "speed_prog_per_hour"):
+            value = summary.get(field)
+            check(
+                type(value) in (int, float),
+                f"summary {field} is a number",
+                type(value).__name__,
+            )
+        for field in ("sessions", "streak_days"):
+            value = summary.get(field)
+            check(
+                type(value) is int,
+                f"summary {field} is an integer",
+                type(value).__name__,
+            )
 
     works = await client.insights_works("30d")
-    check(isinstance(works, dict), "GET /v1/insights/works is an object", type(works).__name__)
-    check(
-        list_of_dicts(works.get("works", [])),
+    if check(
+        isinstance(works, dict), "GET /v1/insights/works is an object", type(works).__name__
+    ) and check(
+        list_of_dicts(works.get("works")),
         "GET /v1/insights/works carries an object list under works",
         type(works.get("works")).__name__,
-    )
+    ):
+        check(
+            all(
+                is_date(work["first_read_day"])
+                for work in works["works"]
+                if "first_read_day" in work
+            ),
+            "every optional first_read_day is a YYYY-MM-DD date",
+        )
 
     await check_annotations(client)
 
@@ -132,12 +165,12 @@ async def check_book(client: LiseurClient, book: dict[str, Any], folder_id: str)
     title = str(book.get("title") or "")[:40] or "a"
 
     results = await client.search(folder_id, title, limit=5)
-    check(isinstance(results, dict), "GET /v1/folders/{id}/search is an object")
-    check(
-        list_of_dicts(results.get("books", [])),
-        "the search answer carries an object list under books",
-        type(results.get("books")).__name__,
-    )
+    if check(isinstance(results, dict), "GET /v1/folders/{id}/search is an object"):
+        check(
+            list_of_dicts(results.get("books")),
+            "the search answer carries an object list under books",
+            type(results.get("books")).__name__,
+        )
 
     record = await client.book(book_id)
     check(

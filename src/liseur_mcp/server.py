@@ -174,9 +174,17 @@ def create_server(client: LiseurClient) -> MCPServer:
         range is "all" or a number of days from 1 to 3660 ("7d", "30d"); any
         other value is refused rather than silently defaulted, because the
         upstream summary and works endpoints would then disagree on the span.
-        Per-work rows are ordered by time read and capped at 50;
-        current_progression is always the latest position regardless of the
-        span.
+        Per-work rows retain the upstream time-read order and are capped at 50;
+        works_total counts all rows, including those with less than two minutes
+        read. current_progression is always the latest position regardless of
+        the span. Optional first_read_day is the account-local first reading
+        day over all history, independent of the span; older servers omit it.
+
+        sessions counts upstream sittings, not raw session events: retained
+        sessions of the same work on one account-local day are grouped across
+        devices while each starts less than five minutes after the preceding
+        ones ended. Compacted history counts one sitting per stored session;
+        raw timings are no longer available to regroup those sessions here.
         """
         _validate_range(range)
         summary = await client.insights_summary(range)
