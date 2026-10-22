@@ -14,6 +14,7 @@ from starlette.applications import Starlette
 from .client import LiseurClient
 from .config import Settings
 from .epub import parse_epub
+from .insights import summary_errors, works_errors
 
 
 def _surface_failure(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
@@ -188,7 +189,12 @@ def create_server(client: LiseurClient) -> MCPServer:
         """
         _validate_range(range)
         summary = await client.insights_summary(range)
-        works = (await client.insights_works(range)).get("works", [])
+        if errors := summary_errors(summary):
+            raise ValueError(f"invalid liseur-sync reading_stats shape: {errors[0]}")
+        payload = await client.insights_works(range)
+        if errors := works_errors(payload):
+            raise ValueError(f"invalid liseur-sync reading_stats shape: {errors[0]}")
+        works = payload["works"]
         return {
             "summary": summary,
             "works": works[:MAX_STATS_WORKS],

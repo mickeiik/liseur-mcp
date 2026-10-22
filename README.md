@@ -28,6 +28,15 @@ requested span; older servers omit it. Rows retain the upstream time-read
 order, including works with less than two minutes read, and are capped at 50;
 `works_total` counts the full list before the cap.
 
+Before returning statistics, `reading_stats` checks the required summary and
+work-row shapes, including every row beyond the cap. Malformed responses fail
+closed with field/path/type-only errors, never payload values. Numbers must be
+finite and cannot be booleans; counts must be integers. `eta_seconds` and
+`last_read_at` are required but may be null, while `first_read_day`, `title` and
+`author` may be absent. A present `first_read_day` must be a real `YYYY-MM-DD`
+date. These are selective shape/type checks, not full OpenAPI or RFC 3339
+validation; valid fields still pass through unchanged.
+
 The `sessions` statistic counts upstream **sittings**, not raw session events.
 For retained history, sessions of the same work on one account-local day are
 grouped across devices while each starts less than five minutes after the
@@ -223,6 +232,10 @@ close the issue.
 the tools use: read-only, it asserts the fields the seven tools read and exits
 non-zero naming what drifted. Run it before a release, or schedule it wherever
 it can reach the instance.
+
+Insights and account-wide annotation checks run even when the catalog has no
+folders/books or its folder/book-dependent response shapes are malformed. The
+canary and `reading_stats` share the same statistics shape checks.
 
 ```sh
 LISEUR_URL=https://books.example.com LISEUR_TOKEN=... \
