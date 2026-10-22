@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import io
+import json
 import zipfile
 from collections.abc import Callable
 from typing import Any
@@ -285,14 +286,301 @@ def test_list_highlights_low_confidence_match_returns_nothing() -> None:
     assert "work_id" in result["note"]
 
 
+def _summary(**fields: Any) -> dict[str, Any]:
+    return {
+        "total_active_minutes": 1.5,
+        "total_pages": 0.5,
+        "sessions": 1,
+        "streak_days": 1,
+        "speed_prog_per_hour": 0.25,
+        **fields,
+    }
+
+
+def _work(**fields: Any) -> dict[str, Any]:
+    return {
+        "work_id": "w1",
+        "sessions": 1,
+        "total_active_minutes": 1.5,
+        "total_pages": 0.5,
+        "current_progression": 0.25,
+        "eta_seconds": None,
+        "last_read_at": None,
+        **fields,
+    }
+
+
+def _stats_server(responses: dict[str, Any]) -> MCPServer:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = responses[request.url.path]
+        return httpx.Response(
+            200,
+            content=payload if isinstance(payload, bytes) else json.dumps(payload),
+            headers={"content-type": "application/json"},
+        )
+
+    return _server(handler)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "payload", "failure"),
+    [
+        (endpoint, payload, f"GET {endpoint} is an object — {type(payload).__name__}")
+        for endpoint in ("/v1/insights/summary", "/v1/insights/works")
+        for payload in (None, [], "PRIVATE_PAYLOAD", 42, True)
+    ] + [
+        (
+            "/v1/insights/works", payload,
+            "GET /v1/insights/works carries an object list under works — " + kind,
+        )
+        for payload, kind in (
+            ({}, "NoneType"), ({"works": None}, "NoneType"),
+            ({"works": "PRIVATE_PAYLOAD"}, "str"), ({"works": 42}, "int"),
+            ({"works": True}, "bool"), ({"works": {}}, "dict"),
+        )
+    ],
+)
+def test_reading_stats_rejects_malformed_envelopes_with_sanitized_shape_errors(
+    endpoint: str, payload: Any, failure: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    responses = {
+        "/v1/insights/summary": _summary(),
+        "/v1/insights/works": {"works": []},
+        endpoint: payload,
+    }
+
+    with pytest.raises(ToolError) as excinfo:
+        _call(_stats_server(responses), "reading_stats", {})
+
+    assert str(excinfo.value) == (
+        f"Error executing tool reading_stats: invalid liseur-sync reading_stats shape: {failure}"
+    )
+    assert "PRIVATE_PAYLOAD" not in caplog.text
+    assert "Bearer token" not in caplog.text
+
+
+def _assert_stats_shape_error(responses: dict[str, Any], failure: str) -> None:
+    with pytest.raises(ToolError) as excinfo:
+        _call(_stats_server(responses), "reading_stats", {})
+    assert str(excinfo.value) == (
+        f"Error executing tool reading_stats: invalid liseur-sync reading_stats shape: {failure}"
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["total_active_minutes", "total_pages", "speed_prog_per_hour", "sessions", "streak_days"],
+)
+@pytest.mark.parametrize("value", [None, True, "PRIVATE_PAYLOAD", [], {}])
+def test_reading_stats_rejects_invalid_required_summary_scalars(field: str, value: Any) -> None:
+    expected = "an integer" if field in ("sessions", "streak_days") else "a number"
+    _assert_stats_shape_error(
+        {
+            "/v1/insights/summary": _summary(**{field: value}),
+            "/v1/insights/works": {"works": []},
+        },
+        f"summary {field} is {expected} — {type(value).__name__}",
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["total_active_minutes", "total_pages", "speed_prog_per_hour", "sessions", "streak_days"],
+)
+def test_reading_stats_rejects_missing_required_summary_scalars(field: str) -> None:
+    summary = _summary()
+    del summary[field]
+    expected = "an integer" if field in ("sessions", "streak_days") else "a number"
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": summary, "/v1/insights/works": {"works": []}},
+        f"summary {field} is {expected} — missing",
+    )
+
+
+@pytest.mark.parametrize("field", ["sessions", "streak_days"])
+def test_reading_stats_rejects_fractional_summary_counts(field: str) -> None:
+    _assert_stats_shape_error(
+        {
+            "/v1/insights/summary": _summary(**{field: 1.5}),
+            "/v1/insights/works": {"works": []},
+        },
+        f"summary {field} is an integer — float",
+    )
+
+
+@pytest.mark.parametrize("field", ["total_active_minutes", "total_pages", "speed_prog_per_hour"])
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity", "1e309", "-1e309"])
+def test_reading_stats_rejects_non_finite_summary_numbers_from_raw_json(
+    field: str, constant: str,
+) -> None:
+    raw = json.dumps(_summary(**{field: "RAW_NUMBER"})).replace('"RAW_NUMBER"', constant).encode()
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": raw, "/v1/insights/works": {"works": []}},
+        f"summary {field} is a number — float",
+    )
+
+
+WORK_FIELDS = (
+    ("work_id", "a string"),
+    ("sessions", "an integer"),
+    ("total_active_minutes", "a number"),
+    ("total_pages", "a number"),
+    ("current_progression", "a number"),
+    ("eta_seconds", "a number or null"),
+    ("last_read_at", "a string or null"),
+)
+
+
+@pytest.mark.parametrize("index", [0, 49, 50, 59])
+@pytest.mark.parametrize("row", [None, "PRIVATE_ROW", [], True, 42])
+def test_reading_stats_rejects_malformed_work_rows_before_capping(index: int, row: Any) -> None:
+    works = [_work(work_id=f"w{i}") for i in range(60)]
+    works[index] = row
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": _summary(), "/v1/insights/works": {"works": works}},
+        f"works[{index}] is an object — {type(row).__name__}",
+    )
+
+
+@pytest.mark.parametrize(("field", "expected"), WORK_FIELDS)
+def test_reading_stats_rejects_missing_required_work_fields(field: str, expected: str) -> None:
+    works = [_work(work_id=f"w{i}") for i in range(51)]
+    del works[50][field]
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": _summary(), "/v1/insights/works": {"works": works}},
+        f"works[50] {field} is {expected} — missing",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "expected", "value"),
+    [
+        (field, expected, value)
+        for field, expected in WORK_FIELDS
+        for value in (None, True, "PRIVATE_PAYLOAD", [], {})
+        if not (value is None and field in ("eta_seconds", "last_read_at"))
+        and not (value == "PRIVATE_PAYLOAD" and field in ("work_id", "last_read_at"))
+    ] + [("sessions", "an integer", 1.5), ("work_id", "a string", 42)],
+)
+def test_reading_stats_rejects_invalid_required_work_scalars(
+    field: str, expected: str, value: Any,
+) -> None:
+    works = [_work(work_id=f"w{i}") for i in range(51)]
+    works[50][field] = value
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": _summary(), "/v1/insights/works": {"works": works}},
+        f"works[50] {field} is {expected} — {type(value).__name__}",
+    )
+
+
+@pytest.mark.parametrize(
+    "field", ["total_active_minutes", "total_pages", "current_progression", "eta_seconds"],
+)
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity", "1e309", "-1e309"])
+def test_reading_stats_rejects_non_finite_work_numbers_from_raw_json(
+    field: str, constant: str,
+) -> None:
+    works = [_work(work_id=f"w{i}") for i in range(51)]
+    works[50][field] = "RAW_NUMBER"
+    raw = json.dumps({"works": works}).replace('"RAW_NUMBER"', constant).encode()
+    expected = "a number or null" if field == "eta_seconds" else "a number"
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": _summary(), "/v1/insights/works": raw},
+        f"works[50] {field} is {expected} — float",
+    )
+
+
+@pytest.mark.parametrize("field", ["title", "author"])
+@pytest.mark.parametrize("value", [None, True, 42, [], {}])
+def test_reading_stats_rejects_invalid_optional_work_strings(field: str, value: Any) -> None:
+    works = [_work(work_id=f"w{i}") for i in range(51)]
+    works[50][field] = value
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": _summary(), "/v1/insights/works": {"works": works}},
+        f"works[50] {field} is a string — {type(value).__name__}",
+    )
+
+
+@pytest.mark.parametrize("index", [0, 50])
+@pytest.mark.parametrize(
+    "value",
+    [
+        None, True, 42, [], {}, "", "PRIVATE_DATE", "2026-02-30", "2026-13-01",
+        "2026-1-01", "20261022", "2026-W43-4", "2026-10-22T00:00:00Z", "2026-10-22 ",
+    ],
+)
+def test_reading_stats_rejects_invalid_optional_dates_before_capping(
+    index: int, value: Any,
+) -> None:
+    works = [_work(work_id=f"w{i}") for i in range(51)]
+    works[index]["first_read_day"] = value
+    _assert_stats_shape_error(
+        {"/v1/insights/summary": _summary(), "/v1/insights/works": {"works": works}},
+        f"works[{index}] first_read_day is a YYYY-MM-DD date — {type(value).__name__}",
+    )
+
+
+@pytest.mark.parametrize("day", ["0001-01-01", "2024-02-29", "2026-10-22", "9999-12-31"])
+def test_reading_stats_preserves_valid_optional_strings_and_nullable_fields(day: str) -> None:
+    summary = _summary()
+    works = [
+        _work(
+            first_read_day=day, title="", author="author", eta_seconds=-0.5,
+            last_read_at="2026-10-22T13:24:59.123456789+02:00",
+        ),
+        _work(eta_seconds=None, last_read_at=None),
+    ]
+    responses = {"/v1/insights/summary": summary, "/v1/insights/works": {"works": works}}
+
+    assert _call(_stats_server(responses), "reading_stats", {}) == {
+        "summary": summary, "works": works, "works_total": 2,
+    }
+
+
+@pytest.mark.parametrize("value", [10**400, -(10**400), -1.25, 0, 1.5])
+def test_reading_stats_preserves_finite_numbers_without_new_range_limits(
+    value: int | float,
+) -> None:
+    summary = _summary(**dict.fromkeys(
+        ("total_active_minutes", "total_pages", "speed_prog_per_hour"), value,
+    ))
+    works = [_work(**dict.fromkeys(
+        ("total_active_minutes", "total_pages", "current_progression", "eta_seconds"), value,
+    ))]
+    responses = {"/v1/insights/summary": summary, "/v1/insights/works": {"works": works}}
+
+    assert _call(_stats_server(responses), "reading_stats", {}) == {
+        "summary": summary, "works": works, "works_total": 1,
+    }
+
+
+@pytest.mark.parametrize("count", [0, 1, 49, 50, 51, 60])
+def test_reading_stats_preserves_passthrough_at_cap_boundaries(count: int) -> None:
+    summary = _summary(sessions=-1, streak_days=-2, future_summary={"values": [None, "extra"]})
+    works = [
+        _work(
+            work_id=f"w{count - index}", sessions=-1,
+            total_active_minutes=(0.4, 1.7, 0.9, 1.7)[index % 4],
+            **({"first_read_day": "2024-02-29"} if index % 2 else {}),
+            future_work={"values": [None, "extra"]},
+        )
+        for index in range(count)
+    ]
+    responses = {"/v1/insights/summary": summary, "/v1/insights/works": {"works": works}}
+
+    assert _call(_stats_server(responses), "reading_stats", {}) == {
+        "summary": summary, "works": works[:50], "works_total": count,
+    }
+
+
 def test_reading_stats_accepts_range_all() -> None:
     seen: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append({"path": request.url.path, "range": request.url.params.get("range", "")})
         if request.url.path.endswith("/insights/summary"):
-            return httpx.Response(200, json={"sessions": 1})
-        return httpx.Response(200, json={"works": [{"work_id": "w1"}]})
+            return httpx.Response(200, json=_summary())
+        return httpx.Response(200, json={"works": [_work()]})
 
     mcp = _server(handler)
     result = _call(mcp, "reading_stats", {"range": "all"})
@@ -301,6 +589,116 @@ def test_reading_stats_accepts_range_all() -> None:
         {"path": "/v1/insights/summary", "range": "all"},
         {"path": "/v1/insights/works", "range": "all"},
     ]
+
+
+def test_reading_stats_preserves_optional_dates_and_unknown_fields() -> None:
+    summary = {
+        "total_active_minutes": 1.5,
+        "total_pages": 0.5,
+        "sessions": 1,
+        "streak_days": 1,
+        "speed_prog_per_hour": 0.25,
+        "future_summary": {"enabled": True},
+    }
+    works = [
+        {
+            "work_id": "w1",
+            "sessions": 1,
+            "total_active_minutes": 1.5,
+            "total_pages": 0.5,
+            "current_progression": 0.25,
+            "eta_seconds": None,
+            "last_read_at": None,
+            "first_read_day": "2024-02-29",
+            "future_work": {"values": [1, 2]},
+        }
+    ]
+    seen: list[tuple[str, str, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/v1/insights/summary":
+            return httpx.Response(200, json=summary)
+        assert request.url.path == "/v1/insights/works"
+        return httpx.Response(200, json={"works": works})
+
+    result = _call(_server(handler), "reading_stats", {"range": "7d"})
+
+    assert result == {"summary": summary, "works": works, "works_total": 1}
+    assert seen == [
+        ("GET", "/v1/insights/summary", {"range": "7d"}),
+        ("GET", "/v1/insights/works", {"range": "7d"}),
+    ]
+
+
+@pytest.mark.parametrize("has_work", [False, True])
+def test_reading_stats_preserves_legacy_payloads_without_optional_dates(
+    has_work: bool,
+) -> None:
+    summary = {
+        "total_active_minutes": 0,
+        "total_pages": 0,
+        "sessions": 0,
+        "streak_days": 0,
+        "speed_prog_per_hour": 0,
+    }
+    works = [
+        {
+            "work_id": "w1",
+            "sessions": 1,
+            "total_active_minutes": 1.5,
+            "total_pages": 0.5,
+            "current_progression": 0.25,
+            "eta_seconds": None,
+            "last_read_at": None,
+        }
+    ] if has_work else []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/insights/summary":
+            return httpx.Response(200, json=summary)
+        assert request.url.path == "/v1/insights/works"
+        return httpx.Response(200, json={"works": works})
+
+    result = _call(_server(handler), "reading_stats", {})
+
+    assert result == {"summary": summary, "works": works, "works_total": len(works)}
+    assert all("first_read_day" not in work for work in result["works"])
+
+
+def test_reading_stats_preserves_short_rows_in_upstream_order_before_capping() -> None:
+    # Ties and nonmonotonic values catch an unintended local re-sort.
+    works = [
+        _work(work_id=f"w{60 - index:02}", total_active_minutes=(0.4, 1.7, 0.9, 1.7)[index % 4])
+        for index in range(60)
+    ]
+    assert all(0 < work["total_active_minutes"] < 2 for work in works)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/insights/summary":
+            return httpx.Response(200, json=_summary(sessions=60))
+        assert request.url.path == "/v1/insights/works"
+        return httpx.Response(200, json={"works": works})
+
+    result = _call(_server(handler), "reading_stats", {})
+
+    assert result["works"] == works[:50]
+    assert len(result["works"]) == 50
+    assert result["works_total"] == 60
+
+
+def test_reading_stats_advertises_upstream_sitting_semantics() -> None:
+    mcp = _server(lambda request: httpx.Response(500))
+    tool = next(tool for tool in asyncio.run(mcp.list_tools()) if tool.name == "reading_stats")
+
+    assert tool.description is not None
+    description = tool.description.lower()
+    assert "sittings" in description
+    assert "less than five minutes" in description
+    assert "account-local day" in description
+    assert "compacted" in description
+    assert "first_read_day" in description
+    assert "older servers" in description
 
 
 def test_list_highlights_next_offset_respects_the_cap() -> None:
@@ -350,8 +748,8 @@ def test_reading_stats_caps_works_and_validates_range() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.url.params.get("range", ""))
         if request.url.path.endswith("/insights/summary"):
-            return httpx.Response(200, json={"sessions": 1})
-        return httpx.Response(200, json={"works": [{"work_id": f"w{i}"} for i in range(60)]})
+            return httpx.Response(200, json=_summary())
+        return httpx.Response(200, json={"works": [_work(work_id=f"w{i}") for i in range(60)]})
 
     mcp = _server(handler)
 

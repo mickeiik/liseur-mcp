@@ -25,6 +25,7 @@ from typing import Any
 
 from liseur_mcp.client import LiseurClient
 from liseur_mcp.epub import parse_epub
+from liseur_mcp.insights import summary_errors, works_errors
 
 # The same ceiling get_book_text enforces, so a pathological book fails here
 # rather than after a scheduled run has buffered it.
@@ -84,11 +85,36 @@ async def run_checks(client: LiseurClient) -> None:
             type(scopes).__name__,
         )
 
+    # Catalog checks depend on finding a usable folder/book; insights and the
+    # annotation feed do not. A malformed catalog response must not hide them.
+    try:
+        await check_catalog(client)
+    except (AttributeError, KeyError, TypeError) as exc:
+        check(False, "folder/book-dependent response shapes are readable", type(exc).__name__)
+
+    summary = await client.insights_summary("30d")
+    errors = summary_errors(summary)
+    if not errors:
+        check(True, "GET /v1/insights/summary carries valid required statistics")
+    for error in errors:
+        check(False, error)
+
+    works = await client.insights_works("30d")
+    errors = works_errors(works)
+    if not errors:
+        check(True, "GET /v1/insights/works carries valid work rows")
+    for error in errors:
+        check(False, error)
+
+    await check_annotations(client)
+
+
+async def check_catalog(client: LiseurClient) -> None:
     folders = await client.folders()
     if not check(list_of_dicts(folders), "GET /v1/folders is a list of objects"):
         return
     if not folders:
-        print("note: no folders on this account; nothing further to check")
+        print("note: no folders on this account; skipping the book-level checks")
         return
     absent = missing_keys(folders, {"folder_id", "name", "kind"})
     check(not absent, "every folder carries folder_id/name/kind", f"missing {absent}")
@@ -107,23 +133,6 @@ async def run_checks(client: LiseurClient) -> None:
     else:
         await check_book(client, books[0], folder_id)
 
-    summary = await client.insights_summary("30d")
-    check(
-        isinstance(summary, dict),
-        "GET /v1/insights/summary is an object",
-        type(summary).__name__,
-    )
-
-    works = await client.insights_works("30d")
-    check(isinstance(works, dict), "GET /v1/insights/works is an object", type(works).__name__)
-    check(
-        list_of_dicts(works.get("works", [])),
-        "GET /v1/insights/works carries an object list under works",
-        type(works.get("works")).__name__,
-    )
-
-    await check_annotations(client)
-
 
 async def check_book(client: LiseurClient, book: dict[str, Any], folder_id: str) -> None:
     book_id = book.get("book_id")
@@ -132,12 +141,12 @@ async def check_book(client: LiseurClient, book: dict[str, Any], folder_id: str)
     title = str(book.get("title") or "")[:40] or "a"
 
     results = await client.search(folder_id, title, limit=5)
-    check(isinstance(results, dict), "GET /v1/folders/{id}/search is an object")
-    check(
-        list_of_dicts(results.get("books", [])),
-        "the search answer carries an object list under books",
-        type(results.get("books")).__name__,
-    )
+    if check(isinstance(results, dict), "GET /v1/folders/{id}/search is an object"):
+        check(
+            list_of_dicts(results.get("books")),
+            "the search answer carries an object list under books",
+            type(results.get("books")).__name__,
+        )
 
     record = await client.book(book_id)
     check(
