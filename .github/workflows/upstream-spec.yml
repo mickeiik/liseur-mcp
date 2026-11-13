@@ -66,7 +66,9 @@ jobs:
               "" \
               "Bump \`INSPECTOR_VERSION\` in \`scripts/smoke.sh\` (and the README line that names it)," \
               "run \`./scripts/smoke.sh\`, then close this issue.")
-            notify "MCP Inspector pin is behind (pinned $pin, latest $latest)" "$body"
+            # A stable title keeps the dedupe above effective while the pin
+            # stays behind; the body and each comment carry the versions.
+            notify "MCP Inspector pin is behind" "$body"
             echo "::warning::the Inspector pin is behind: $pin -> $latest"
           else
             echo "Inspector pin is current: $pin"
